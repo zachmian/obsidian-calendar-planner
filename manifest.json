@@ -1,9 +1,9 @@
 {
   "id": "obsidian-tagged-calendar",
   "name": "Tagged Calendar",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "minAppVersion": "0.15.0",
   "description": "Wyświetla kalendarz z wpisami o określonym tagu",
-  "author": "Twoje Imię",
+  "author": "Damian Zachwieja @ ztechnicznego.pl",
   "isDesktopOnly": false
 } 
