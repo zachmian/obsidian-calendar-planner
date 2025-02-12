@@ -1,16 +1,20 @@
 # Obsidian Calendar Planner
 
+Autor: Damian Zachwieja
+
+💬 [ztechnicznego.pl – newsletter o produktywnym korzystaniu z technologii](https://ztechnicznego.pl)
+
+---
 Calendar Planner to plugin do Obsidian, który umożliwia wizualizację i zarządzanie notatkami w formie kalendarza. Plugin pozwala na filtrowanie notatek za pomocą tagów i zaawansowanych zapytań wyszukiwania, a także oferuje wygodne przeciąganie i upuszczanie notatek między dniami.
 
 ## Funkcje
 
 - 📅 Widok miesięczny i tygodniowy kalendarza
-- 🔍 Filtrowanie notatek za pomocą przypisanego tagu
+- 🔍 Zaawansowane filtrowanie notatek
 - 🖱️ Przeciąganie i upuszczanie notatek między dniami
 - 🎨 Dostosowanie do motywu Obsidian
-- 🔄 Automatyczne odświeżanie przy zmianach
-- 📌 Przycisk "Dziś" do szybkiej nawigacji
-- ⚙️ Konfigurowalne ustawienia
+- 📄 Lista niezaplanowanych notatek
+- 🔁 Notatki powtarzalne (miesięcznie lub rocznie)
 
 ## Demo
 ![](./calendar-planner-demo.gif)
@@ -20,21 +24,23 @@ Calendar Planner to plugin do Obsidian, który umożliwia wizualizację i zarzą
 - [x] Dodanie listy notatek pasujących do filtra, ale bez przypisanej daty
 - [x] Możliwość tworzenia powtarzalnych notatek
 - [x] Możliwość dodawania kilku filtrów do jednego kalendarza
-- [ ] Generowanie odnośników do dat wszystkich powtórzeń
-- [ ] Wsparcie dla języka angielskiego (obecnie tylko polski)
+- [ ] Generowanie odnośników do dat wszystkich powtórzeń (dla powtarzalnych notatek)
+- [ ] Wsparcie dla języka angielskiego (obecnie wtyczka działa w większości w języku polskim)
+- [ ] Przycisk do dodawania notatek w konkretnych dniach
 
 ## Instalacja
-Możesz zainstalować ten plugin korzystając z wtyczki BRAT w Obsidian.
-Dodaj ją do swojego sejfu, a później do niej dodaj Calendar Planner, podając adres tego repozytorium.
+Możesz zainstalować ten plugin korzystając z wtyczki [BRAT](https://github.com/TfTHacker/obsidian42-brat) w Obsidian.
+Dodaj ją do swojego Obsidian, a później z jej pomocą zainstaluj Calendar Planner, podając adres tego repozytorium.
 
 ## Użycie
 
-Aby wyświetlić kalendarz w notatce, użyj bloku kodu:
+Aby wyświetlić kalendarz w notatce, użyj bloku kodu, dostosowując filtrowanie do swoich potrzeb:
 
-```markdown
+~~~markdown
 ```calendar-planner
 tag:#projekt
 ```
+~~~
 
 Możesz też skorzystać z dodatkowych opcji, wskazanych poniżej.
 
@@ -81,8 +87,6 @@ Notatka początkowa jest wtedy umieszczona w kalendarzu w swojej pełnej formie,
 Wirtualnych notatek nie można przenosić, ale można je kliknąć i otworzyć oryginalną notatkę.
 
 Aby skonfigurować powtarzanie, wymagane jest dodanie parametru `powtarzanie` (zgodnie z ustawieniami pluginu) i ustawienie jej wartości `miesięcznie` lub `rocznie`.
-
-
 
 
 ## Ustawienia
