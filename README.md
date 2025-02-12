@@ -35,7 +35,6 @@ Aby wyświetlić kalendarz w notatce, użyj bloku kodu:
 ```calendar-planner
 tag:#projekt
 ```
-```
 
 Możesz też skorzystać z dodatkowych opcji, wskazanych poniżej.
 
@@ -44,29 +43,29 @@ Filtrowanie pozwala zawęzić / rozbudować wyszukiwanie.
 Możesz wpisać w wyszukiwanie formułę `tag:#publikacja -tag:#archiwum`, żeby pokazać tylko te publikacje, które nie są oznaczone jako archiwum.
 Możesz też wykluczyć folder, który nie ma być uwzględniany w wyszukiwaniu, np. `tag:#publikacja -path:"90 Robocze/Szablony/"`.
 
-```markdown
+~~~markdown
 ```calendar-planner
 tag:#publikacja -path:"90 Robocze/Szablony/"
 ```
-```
+~~~
 
 ### Dodanie kilku filtrów do jednego kalendarza
 Określając filtry, możesz dodać im nazwy. Jeśli filtrów będzie więcej, niż jeden, to w kalendarzu pojawi się możliwość przełączania pomiędzy nimi.
-```markdown
+~~~markdown
 ```calendar-planner
 Publikacje:tag:#publikacja -path:"90 Robocze/Szablony/"
 Zadania:tag:#zadanie 
 ```
-```
+~~~
 
 ### Pokazywanie niezaplanowanych notatek
-Jeśli dodając kalendarz do strony, dopiszemy do niech `+unplanned`, to pod kalendarzem pojawi się dodatkowa sekcja "Niezaplanowane".
-```markdown
+Jeśli dodając kalendarz do strony, dopisemy do niech `+unplanned`, to pod kalendarzem pojawi się dodatkowa sekcja "Niezaplanowane".
+~~~markdown
 ```calendar-planner
 tag:#publikacja -path:"90 Robocze/Szablony/"
 +unplanned
 ```
-```
+~~~
 
 ### Przykłady zapytań
 
