@@ -29,6 +29,7 @@
     border-radius: 3px;
     background-color: var(--background-modifier-border);
     cursor: move;
+    position: relative;
 }
 
 .calendar-header {
@@ -69,10 +70,47 @@ select {
 }
 
 .calendar-controls {
-    margin-bottom: 10px;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    margin-bottom: 16px;
+    padding: 5px;
+}
+
+.calendar-navigation {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.view-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.filter-selector {
+    display: flex;
+    align-items: center;
+}
+
+.filter-selector select {
+    width: 180px;
+    padding: 4px 8px;
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    color: var(--text-normal);
+    font-size: 0.9em;
+}
+
+.filter-selector select:hover {
+    background-color: var(--background-modifier-form-field-hover);
+}
+
+.filter-selector select:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
 }
 
 .calendar-day.today {
@@ -115,4 +153,68 @@ select {
 .calendar-day.today.has-entries.dragover {
     background-color: var(--interactive-accent);
     filter: brightness(1.2);
+}
+
+.calendar-planner {
+    position: relative;
+    padding: 1em;
+}
+
+.recurring-entry {
+    display: block;
+    background-color: var(--background-modifier-border);
+}
+
+.recurring-entry .recurring-icon {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    font-size: 0.7em;
+    opacity: 0.4;
+    line-height: 1;
+}
+
+.unplanned-section {
+    margin-top: 2em;
+    padding: 1em;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+}
+
+.unplanned-section h3 {
+    margin: 0 0 1em 0;
+    color: var(--text-muted);
+}
+
+.unplanned-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 50px;
+    padding: 8px;
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 4px;
+}
+
+.unplanned-items.dragover {
+    background-color: var(--background-modifier-border-hover);
+    border-style: solid;
+}
+
+.unplanned-items .calendar-entry {
+    background-color: var(--background-modifier-border-hover);
+}
+
+.calendar-grid-container {
+    margin-bottom: 1em;
+}
+
+.calendar-entry.future-recurring {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.calendar-entry .lock-icon {
+    margin-left: 4px;
+    font-size: 0.8em;
 } 

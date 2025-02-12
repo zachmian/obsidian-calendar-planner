@@ -1,20 +1,45 @@
-import { Plugin, TFile, MarkdownView, PluginSettingTab, Setting, WorkspaceLeaf, moment } from 'obsidian';
+import { Plugin, TFile, MarkdownView, PluginSettingTab, Setting, WorkspaceLeaf, moment, Menu, MenuItem } from 'obsidian';
+
+interface RecurringNote {
+    file: TFile;
+    originalDate: Date;
+    virtualDate: Date;
+    recurrenceType: 'monthly' | 'yearly';
+}
 
 interface TaggedCalendarSettings {
     dateField: string;
     dateFormat: string;
     defaultView: 'month' | 'week';
+    recurringLookAhead: number; // ile lat do przodu generować powtórzenia
+    recurrenceField: string; // nazwa pola do oznaczania powtarzalności
+    generateDatesField: boolean; // czy generować pole dates dla notatek powtarzalnych
 }
 
 const DEFAULT_SETTINGS: TaggedCalendarSettings = {
     dateField: 'date',
     dateFormat: 'YYYY-MM-DD',
-    defaultView: 'month'
+    defaultView: 'month',
+    recurringLookAhead: 2,
+    recurrenceField: 'recurrence',
+    generateDatesField: false
 }
 
 interface CalendarState {
     currentDate: Date;
     view: 'month' | 'week';
+    showUnplanned: boolean;
+}
+
+interface Filter {
+    name: string;
+    query: string;
+}
+
+interface VirtualFile extends TFile {
+    isVirtual?: boolean;
+    virtualId?: string;
+    virtualMetadata?: any;
 }
 
 class TaggedCalendarSettingTab extends PluginSettingTab {
@@ -29,7 +54,7 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
         const {containerEl} = this;
         containerEl.empty();
 
-        containerEl.createEl('h2', {text: 'Ustawienia Tagged Calendar'});
+        containerEl.createEl('h2', {text: 'Ustawienia Calendar Planner'});
 
         new Setting(containerEl)
             .setName('Nazwa pola daty')
@@ -64,6 +89,39 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
                     this.plugin.settings.defaultView = value;
                     await this.plugin.saveSettings();
                 }));
+
+        new Setting(containerEl)
+            .setName('Okres powtarzania')
+            .setDesc('Ile lat do przodu generować powtarzające się notatki')
+            .addSlider(slider => slider
+                .setLimits(1, 5, 1)
+                .setValue(this.plugin.settings.recurringLookAhead)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.recurringLookAhead = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Nazwa pola powtarzalności')
+            .setDesc('Nazwa pola w frontmatter używanego do oznaczania powtarzających się notatek (np. "recurrence" lub "powtarzanie")')
+            .addText(text => text
+                .setPlaceholder('recurrence')
+                .setValue(this.plugin.settings.recurrenceField)
+                .onChange(async (value) => {
+                    this.plugin.settings.recurrenceField = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Generuj pole dates')
+            .setDesc('Czy generować pole dates w frontmatter dla notatek powtarzalnych. Jeśli wyłączone, daty będą generowane tylko w kalendarzu.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.generateDatesField)
+                .onChange(async (value) => {
+                    this.plugin.settings.generateDatesField = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 
@@ -71,7 +129,13 @@ export default class TaggedCalendarPlugin extends Plugin {
     settings: TaggedCalendarSettings;
     private container: HTMLElement;
     private currentTag: string;
+    private filters: Filter[] = [];
+    private currentFilterIndex: number = 0;
     private activeLeaf: WorkspaceLeaf | null = null;
+    private virtualFileCache: Map<string, any> = new Map(); // Cache dla wirtualnych plików
+    private showUnplanned: boolean = false;
+    private currentView: 'month' | 'week';
+    private currentDate: Date;
 
     async onload() {
         await this.loadSettings();
@@ -81,13 +145,45 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         // Rejestracja bloku markdown
         this.registerMarkdownCodeBlockProcessor('calendar-planner', async (source, el, ctx) => {
-            const [query] = source.split('\n');
-            if (!query) return;
+            // Parsuj filtry z kodu
+            const lines = source.split('\n').filter(line => line.trim());
+            this.filters = [];
+            let showUnplanned = false;
+            
+            if (lines.length === 0) return;
+
+            // Sprawdź czy mamy stary format (pojedynczy filtr bez nazwy)
+            if (lines.length === 1 && !lines[0].includes(':')) {
+                this.filters = [{
+                    name: 'Domyślny',
+                    query: lines[0].trim()
+                }];
+            } else {
+                // Parsuj nowy format z nazwanymi filtrami i opcjami
+                this.filters = lines
+                    .filter(line => !line.startsWith('+'))
+                    .map(line => {
+                        const [name, ...queryParts] = line.split(':');
+                        return {
+                            name: name.trim(),
+                            query: queryParts.join(':').trim()
+                        };
+                    });
+                
+                // Sprawdź opcje
+                showUnplanned = lines.some(line => line.trim() === '+unplanned');
+            }
+
+            if (this.filters.length === 0) return;
 
             const calendar = document.createElement('div');
             calendar.className = 'calendar-planner';
             
-            await this.renderCalendar(calendar, query.trim());
+            // Renderuj kalendarz z pierwszym filtrem
+            this.currentFilterIndex = 0;
+            this.showUnplanned = showUnplanned;
+            await this.renderCalendar(calendar, this.filters[0].query, showUnplanned);
+
             el.appendChild(calendar);
 
             // Zapisz referencję do aktywnego liścia
@@ -114,6 +210,9 @@ export default class TaggedCalendarPlugin extends Plugin {
                 }
             })
         );
+
+        this.currentView = this.settings.defaultView;
+        this.currentDate = new Date();
     }
 
     async loadSettings() {
@@ -124,30 +223,44 @@ export default class TaggedCalendarPlugin extends Plugin {
         await this.saveData(this.settings);
     }
 
-    async renderCalendar(container: HTMLElement, query: string) {
-        console.log("Renderowanie kalendarza dla tagu:", query);
+    async renderCalendar(container: HTMLElement, query: string, showUnplanned: boolean = false) {
+        console.log("[renderCalendar] Start", {
+            query,
+            showUnplanned,
+            currentShowUnplanned: this.showUnplanned,
+            stackTrace: new Error().stack
+        });
+        
+        // Zachowaj aktualną wartość showUnplanned jeśli nie jest explicite przekazana
+        if (this.showUnplanned && showUnplanned === false) {
+            console.log("[renderCalendar] Zachowuję poprzednią wartość showUnplanned", {
+                previous: this.showUnplanned,
+                new: showUnplanned
+            });
+            showUnplanned = this.showUnplanned;
+        }
         
         // Wyczyść kontener przed renderowaniem
         container.empty();
         
         this.container = container;
         this.currentTag = query;
-        
+        this.showUnplanned = showUnplanned;
+
         // Stan kalendarza
         const state: CalendarState = {
-            currentDate: new Date(),
-            view: this.settings.defaultView
+            currentDate: this.currentDate,
+            view: this.currentView,
+            showUnplanned: this.showUnplanned
         };
 
         // Kontener dla kontrolek
         const controls = document.createElement('div');
-        controls.style.display = 'flex';
-        controls.style.justifyContent = 'space-between';
-        controls.style.marginBottom = '10px';
-        controls.style.padding = '5px';
+        controls.className = 'calendar-controls';
 
-        // Przyciski nawigacji
+        // Lewa strona - nawigacja
         const navigationDiv = document.createElement('div');
+        navigationDiv.className = 'calendar-navigation';
         
         const prevButton = document.createElement('button');
         prevButton.textContent = '←';
@@ -157,6 +270,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             } else {
                 state.currentDate = new Date(state.currentDate.getTime() - 7 * 24 * 60 * 60 * 1000);
             }
+            this.currentDate = state.currentDate;
             updateCalendar();
         });
 
@@ -165,6 +279,7 @@ export default class TaggedCalendarPlugin extends Plugin {
         todayButton.className = 'today-button';
         todayButton.addEventListener('click', () => {
             state.currentDate = new Date();
+            this.currentDate = state.currentDate;
             updateCalendar();
         });
 
@@ -176,6 +291,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             } else {
                 state.currentDate = new Date(state.currentDate.getTime() + 7 * 24 * 60 * 60 * 1000);
             }
+            this.currentDate = state.currentDate;
             updateCalendar();
         });
 
@@ -187,30 +303,89 @@ export default class TaggedCalendarPlugin extends Plugin {
         navigationDiv.appendChild(nextButton);
         navigationDiv.appendChild(dateLabel);
 
+        // Prawa strona - kontrolki widoku
+        const viewControls = document.createElement('div');
+        viewControls.className = 'view-controls';
+
         // Przełącznik widoku
         const viewToggle = document.createElement('select');
         viewToggle.innerHTML = `
             <option value="month">Miesiąc</option>
             <option value="week">Tydzień</option>
         `;
-        viewToggle.value = state.view;
+        viewToggle.value = this.currentView;
         viewToggle.addEventListener('change', (e) => {
-            state.view = (e.target as HTMLSelectElement).value as 'month' | 'week';
+            this.currentView = (e.target as HTMLSelectElement).value as 'month' | 'week';
+            state.view = this.currentView;
             updateCalendar();
         });
 
+        viewControls.appendChild(viewToggle);
+
+        // Dodaj selektor filtrów jeśli jest więcej niż jeden
+        if (this.filters.length > 1) {
+            const filterSelector = this.createFilterSelector();
+            viewControls.appendChild(filterSelector);
+        }
+
         controls.appendChild(navigationDiv);
-        controls.appendChild(viewToggle);
+        controls.appendChild(viewControls);
         container.appendChild(controls);
 
-        // Kontener na kalendarz
-        const calendarContainer = document.createElement('div');
-        container.appendChild(calendarContainer);
+        // Kontener na siatkę kalendarza
+        const gridContainer = document.createElement('div');
+        gridContainer.className = 'calendar-grid-container';
+        container.appendChild(gridContainer);
+
+        // Pobierz wszystkie pliki pasujące do zapytania
+        console.log("[renderCalendar] Pobieranie przefiltrowanych plików");
+        const filteredFiles = await this.getFilteredFiles(query);
+        console.log("[renderCalendar] Otrzymano przefiltrowane pliki", {
+            count: filteredFiles.length,
+            files: filteredFiles.map(f => ({
+                path: f.file.path,
+                date: f.date.toISOString()
+            }))
+        });
+
+        // Funkcja odświeżająca widok
+        const refreshView = async () => {
+            console.log("[refreshView] Start", {
+                showUnplanned: this.showUnplanned,
+                currentTag: this.currentTag,
+                stackTrace: new Error().stack
+            });
+
+            // Wyczyść siatkę kalendarza
+            gridContainer.innerHTML = '';
+            
+            // Usuń stary kontener niezaplanowanych
+            const oldUnplannedContainer = container.querySelector('.unplanned-container');
+            if (oldUnplannedContainer) {
+                oldUnplannedContainer.remove();
+            }
+
+            // Odśwież siatkę kalendarza
+            if (state.view === 'month') {
+                await this.renderMonthView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
+            } else {
+                await this.renderWeekView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
+            }
+
+            // Odśwież sekcję niezaplanowanych
+            if (this.showUnplanned) {
+                console.log("[refreshView] Dodaję sekcję niezaplanowanych");
+                const newUnplannedContainer = document.createElement('div');
+                newUnplannedContainer.className = 'unplanned-container';
+                const unplannedSection = await this.createUnplannedSection(this.currentTag, refreshView);
+                newUnplannedContainer.appendChild(unplannedSection);
+                container.appendChild(newUnplannedContainer);
+            }
+        };
 
         // Funkcja aktualizująca kalendarz
         const updateCalendar = async () => {
-            // Wyczyść poprzedni widok
-            calendarContainer.innerHTML = '';
+            await refreshView();
 
             // Aktualizuj etykietę daty
             const monthNamesGenitive = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 
@@ -220,7 +395,6 @@ export default class TaggedCalendarPlugin extends Plugin {
             
             if (state.view === 'month') {
                 dateLabel.textContent = `${monthNamesNominative[state.currentDate.getMonth()]} ${state.currentDate.getFullYear()}`;
-                await this.renderMonthView(calendarContainer, state.currentDate, query);
             } else {
                 const weekStart = new Date(state.currentDate);
                 weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
@@ -239,8 +413,6 @@ export default class TaggedCalendarPlugin extends Plugin {
                 } else {
                     dateLabel.textContent = `${weekStart.getDate()} ${startMonth} ${startYear} - ${weekEnd.getDate()} ${endMonth} ${endYear}`;
                 }
-                
-                await this.renderWeekView(calendarContainer, state.currentDate, query);
             }
         };
 
@@ -290,16 +462,104 @@ export default class TaggedCalendarPlugin extends Plugin {
         return null;
     }
 
-    private async getFilteredFiles(query: string): Promise<TFile[]> {
+    private async getFilteredFiles(query: string): Promise<{file: TFile, date: Date}[]> {
+        console.log("[getFilteredFiles] Start", {
+            query,
+            stackTrace: new Error().stack
+        });
+
+        // Podziel zapytanie na części, zachowując fragmenty w cudzysłowach
+        const conditions = this.splitQueryPreservingQuotes(query);
+        console.log("[getFilteredFiles] Podzielone warunki:", conditions);
+
+        const allFiles: {file: TFile, date: Date}[] = [];
         const files = this.app.vault.getMarkdownFiles();
         
-        // Jeśli to proste wyszukiwanie po tagu (dla kompatybilności wstecznej)
-        if (!query.includes(' ') && !query.includes(':')) {
-            const tag = query.startsWith('#') ? query : '#' + query;
-            return this.filterFilesByTag(files, tag);
+        // Najpierw zbierz wszystkie pliki rekurencyjne
+        const recurringFiles = files.filter(file => {
+            const metadata = this.app.metadataCache.getFileCache(file);
+            return metadata?.frontmatter?.[this.settings.recurrenceField];
+        });
+
+        // Generuj daty dla plików rekurencyjnych
+        const recurringDates = await this.generateRecurringDates(recurringFiles);
+        
+        // Przetwórz wszystkie pliki (z wyjątkiem rekurencyjnych)
+        for (const file of files) {
+            const metadata = this.app.metadataCache.getFileCache(file);
+            if (!metadata?.frontmatter) continue;
+            
+            // Pomiń pliki rekurencyjne - będą dodane później
+            if (metadata.frontmatter[this.settings.recurrenceField]) continue;
+            
+            // Sprawdź czy plik spełnia wszystkie warunki
+            let matchesAllConditions = true;
+            for (const condition of conditions) {
+                if (!this.matchesCondition(file, metadata, condition)) {
+                    matchesAllConditions = false;
+                    break;
+                }
+            }
+            
+            if (!matchesAllConditions) continue;
+            
+            // Pobierz datę z frontmattera
+            const dateStr = metadata.frontmatter[this.settings.dateField];
+            if (!dateStr) continue;
+
+            console.log("[getFilteredFiles] Znaleziono plik", {
+                file: file.path,
+                dateStr,
+                metadata: metadata.frontmatter
+            });
+            
+            const date = this.parseDateFromLink(dateStr);
+            if (date) {
+                allFiles.push({file, date});
+            }
         }
 
-        // Parsuj zaawansowane zapytanie
+        // Dodaj powtarzające się pliki z ich datami
+        recurringDates.forEach(({file, dates}) => {
+            console.log("[getFilteredFiles] Przetwarzanie pliku rekurencyjnego", {
+                file: file.path,
+                datesCount: dates.length
+            });
+
+            const metadata = this.app.metadataCache.getFileCache(file);
+            if (!metadata?.frontmatter) return;
+            
+            // Sprawdź czy plik spełnia wszystkie warunki
+            let matchesAllConditions = true;
+            for (const condition of conditions) {
+                if (!this.matchesCondition(file, metadata, condition)) {
+                    matchesAllConditions = false;
+                    break;
+                }
+            }
+            
+            if (!matchesAllConditions) return;
+            
+            const originalDate = this.parseDateFromLink(metadata.frontmatter[this.settings.dateField]);
+            if (originalDate) {
+                allFiles.push({file, date: originalDate});
+            
+                // Dodaj tylko przyszłe daty (bez daty podstawowej)
+                dates.forEach(date => {
+                    if (date > originalDate) {
+                        allFiles.push({file, date});
+                    }
+                });
+            }
+        });
+        
+        // Posortuj pliki po dacie
+        allFiles.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+        return allFiles;
+    }
+
+    private filterFilesByQuery(files: TFile[], query: string): TFile[] {
         const conditions = query.split(' ').filter(part => part.trim());
         
         return files.filter(file => {
@@ -323,29 +583,89 @@ export default class TaggedCalendarPlugin extends Plugin {
         });
     }
 
-    private filterFilesByTag(files: TFile[], tag: string): TFile[] {
-        return files.filter(file => {
-            const cache = this.app.metadataCache.getFileCache(file);
-            
-            // Sprawdź tagi w frontmatter
-            const frontmatterTags = cache?.frontmatter?.tags;
-            if (Array.isArray(frontmatterTags)) {
-                if (frontmatterTags.includes(tag) || frontmatterTags.includes(tag.substring(1))) {
-                    return true;
+    private async generateRecurringDates(files: TFile[]): Promise<{file: TFile, dates: Date[]}[]> {
+        const result: {file: TFile, dates: Date[]}[] = [];
+        const currentDate = new Date();
+        const maxDate = new Date(currentDate.getFullYear() + this.settings.recurringLookAhead, currentDate.getMonth(), currentDate.getDate());
+
+        // Mapowanie wartości parametrów na typ powtarzalności
+        const recurrenceMap: { [key: string]: 'monthly' | 'yearly' } = {
+            'monthly': 'monthly',
+            'miesięcznie': 'monthly',
+            'miesiecznie': 'monthly',
+            'yearly': 'yearly',
+            'rocznie': 'yearly'
+        };
+
+        for (const file of files) {
+            try {
+                const metadata = this.app.metadataCache.getFileCache(file);
+                if (!metadata?.frontmatter) continue;
+
+                const recurrenceValue = metadata.frontmatter[this.settings.recurrenceField];
+                if (!recurrenceValue) continue;
+
+                // Normalizacja wartości do standardowego formatu
+                const recurrence = recurrenceMap[recurrenceValue.toString().toLowerCase()];
+                if (!recurrence) continue;
+
+                const originalDate = this.parseDateFromLink(metadata.frontmatter[this.settings.dateField]);
+                if (!originalDate) continue;
+
+                // Generuj daty wystąpień
+                const dates: Date[] = [];
+                let currentInstance = new Date(originalDate);
+                let instanceCount = 0;
+                const MAX_INSTANCES = 100;
+
+                // Ustaw godzinę na 12:00, aby uniknąć problemów ze strefą czasową
+                currentInstance.setHours(12, 0, 0, 0);
+
+                // Przesuń datę na następne wystąpienie
+                if (recurrence === 'monthly') {
+                    currentInstance = new Date(currentInstance.getFullYear(), currentInstance.getMonth() + 1, currentInstance.getDate());
+                } else if (recurrence === 'yearly') {
+                    currentInstance = new Date(currentInstance.getFullYear() + 1, currentInstance.getMonth(), currentInstance.getDate());
                 }
+
+                while (currentInstance <= maxDate && instanceCount < MAX_INSTANCES) {
+                    dates.push(new Date(currentInstance));
+                    instanceCount++;
+
+                    // Przesuń datę zgodnie z typem powtarzania
+                    if (recurrence === 'monthly') {
+                        currentInstance = new Date(currentInstance.getFullYear(), currentInstance.getMonth() + 1, currentInstance.getDate());
+                    } else if (recurrence === 'yearly') {
+                        currentInstance = new Date(currentInstance.getFullYear() + 1, currentInstance.getMonth(), currentInstance.getDate());
+                    }
+
+                    // Ustaw godzinę na 12:00 po każdej zmianie
+                    currentInstance.setHours(12, 0, 0, 0);
+                }
+
+                if (dates.length > 0) {
+                    console.log('Wygenerowane daty dla pliku:', {
+                        file: file.path,
+                        originalDate: originalDate,
+                        dates: dates.map(d => d.toISOString())
+                    });
+                    result.push({file, dates});
+                }
+            } catch (error) {
+                console.error('Błąd podczas generowania dat dla pliku:', file.path, error);
+                continue;
             }
-            
-            // Sprawdź tagi inline
-            const tags = cache?.tags;
-            if (tags) {
-                return tags.some(t => t.tag === tag || t.tag === tag.substring(1));
-            }
-            
-            return false;
-        });
+        }
+
+        return result;
     }
 
     private matchesCondition(file: TFile, cache: any, condition: string): boolean {
+        // Wykluczenie (np. -tag:#projekt lub -path:"Projekty/2024")
+        if (condition.startsWith('-')) {
+            return !this.matchesCondition(file, cache, condition.substring(1));
+        }
+
         // Tag (np. tag:#projekt lub #projekt)
         if (condition.startsWith('tag:') || condition.startsWith('#')) {
             const tag = condition.startsWith('tag:') ? 
@@ -380,7 +700,34 @@ export default class TaggedCalendarPlugin extends Plugin {
         return this.filterFilesByTag([file], tag).length > 0;
     }
 
-    private async renderMonthView(container: HTMLElement, date: Date, query: string) {
+    private filterFilesByTag(files: TFile[], tag: string): TFile[] {
+        return files.filter(file => {
+            const cache = this.app.metadataCache.getFileCache(file);
+            
+            // Sprawdź tagi w frontmatter
+            const frontmatterTags = cache?.frontmatter?.tags;
+            if (Array.isArray(frontmatterTags)) {
+                if (frontmatterTags.includes(tag) || frontmatterTags.includes(tag.substring(1))) {
+                    return true;
+                }
+            }
+            
+            // Sprawdź tagi inline
+            const tags = cache?.tags;
+            if (tags) {
+                return tags.some(t => t.tag === tag || t.tag === tag.substring(1));
+            }
+            
+            return false;
+        });
+    }
+
+    private async renderMonthView(container: HTMLElement, date: Date, query: string, refreshView: () => Promise<void>) {
+        console.log("[renderMonthView] Start", {
+            date: date.toISOString(),
+            query
+        });
+
         const calendar = document.createElement('div');
         calendar.className = 'calendar-grid';
         
@@ -397,19 +744,17 @@ export default class TaggedCalendarPlugin extends Plugin {
         const files = await this.getFilteredFiles(query);
         const taggedFiles = new Map<string, TFile[]>();
 
-        for (const file of files) {
-            const metadata = this.app.metadataCache.getFileCache(file);
-            if (!metadata?.frontmatter) continue;
-
-            const fileDate = metadata.frontmatter[this.settings.dateField];
-            if (!fileDate) continue;
-
-            const parsedDate = this.parseDateFromLink(fileDate);
-            if (!parsedDate) continue;
-
-            const localDate = new Date(parsedDate.getTime() - parsedDate.getTimezoneOffset() * 60000);
-            const dateStr = localDate.toISOString().split('T')[0];
+        // Mapuj pliki na daty
+        for (const {file, date: fileDate} of files) {
+            // Użyj moment.js do formatowania daty w lokalnej strefie czasowej
+            const dateStr = window.moment(fileDate).format('YYYY-MM-DD');
             
+            console.log("[renderMonthView] Mapowanie pliku na datę", {
+                file: file.path,
+                date: dateStr,
+                originalDate: fileDate
+            });
+
             if (!taggedFiles.has(dateStr)) {
                 taggedFiles.set(dateStr, []);
             }
@@ -421,7 +766,7 @@ export default class TaggedCalendarPlugin extends Plugin {
         const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
 
         // Dodaj puste dni na początku miesiąca
-        let firstDayOfWeek = firstDay.getDay() || 7; // Konwersja 0 (niedziela) na 7
+        let firstDayOfWeek = firstDay.getDay() || 7;
         for (let i = 1; i < firstDayOfWeek; i++) {
             const emptyDay = document.createElement('div');
             emptyDay.className = 'calendar-day empty';
@@ -430,19 +775,26 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         // Dodaj dni miesiąca
         for (let day = 1; day <= lastDay.getDate(); day++) {
-            const currentDate = new Date(date.getFullYear(), date.getMonth(), day);
-            const localDate = new Date(currentDate.getTime() - currentDate.getTimezoneOffset() * 60000);
-            const dateStr = localDate.toISOString().split('T')[0];
+            // Ustaw godzinę na 12:00 aby uniknąć problemów ze strefą czasową
+            const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
+            const dateStr = window.moment(currentDate).format('YYYY-MM-DD');
             const entries = taggedFiles.get(dateStr) || [];
             
-            const dayEl = this.createDroppableDay(currentDate, entries);
+            console.log("[renderMonthView] Renderowanie dnia", {
+                date: dateStr,
+                currentDate: currentDate.toISOString(),
+                entriesCount: entries.length,
+                entries: entries.map(f => f.path)
+            });
+            
+            const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
             calendar.appendChild(dayEl);
         }
 
         container.appendChild(calendar);
     }
 
-    private async renderWeekView(container: HTMLElement, date: Date, query: string) {
+    private async renderWeekView(container: HTMLElement, date: Date, query: string, refreshView: () => Promise<void>) {
         const calendar = document.createElement('div');
         calendar.className = 'calendar-grid';
         
@@ -459,17 +811,8 @@ export default class TaggedCalendarPlugin extends Plugin {
         const files = await this.getFilteredFiles(query);
         const taggedFiles = new Map<string, TFile[]>();
 
-        for (const file of files) {
-            const metadata = this.app.metadataCache.getFileCache(file);
-            if (!metadata?.frontmatter) continue;
-
-            const fileDate = metadata.frontmatter[this.settings.dateField];
-            if (!fileDate) continue;
-
-            const parsedDate = this.parseDateFromLink(fileDate);
-            if (!parsedDate) continue;
-
-            const localDate = new Date(parsedDate.getTime() - parsedDate.getTimezoneOffset() * 60000);
+        for (const {file, date: fileDate} of files) {
+            const localDate = new Date(fileDate.getTime() - fileDate.getTimezoneOffset() * 60000);
             const dateStr = localDate.toISOString().split('T')[0];
             
             if (!taggedFiles.has(dateStr)) {
@@ -491,104 +834,313 @@ export default class TaggedCalendarPlugin extends Plugin {
             const dateStr = localDate.toISOString().split('T')[0];
             const entries = taggedFiles.get(dateStr) || [];
             
-            const dayEl = this.createDroppableDay(currentDate, entries);
+            const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
             calendar.appendChild(dayEl);
         }
 
         container.appendChild(calendar);
     }
 
-    private async updateFileDate(file: TFile, newDate: string) {
+    private async updateFileDate(file: TFile, newDate: string | null, refreshView?: () => Promise<void>) {
         try {
-            console.log('Aktualizacja daty:', {
+            console.log("[updateFileDate] Start", {
                 file: file.path,
-                newDate: newDate,
-                dateField: this.settings.dateField
+                newDate,
+                showUnplanned: this.showUnplanned,
+                currentView: this.currentView,
+                currentDate: this.currentDate
             });
 
-            const content = await this.app.vault.read(file);
+            // Zachowaj aktualny stan widoku
+            const viewToggle = this.container?.querySelector('.view-controls select') as HTMLSelectElement | null;
+            const currentView = viewToggle?.value as 'month' | 'week';
+            
+            // Zachowaj aktualną wartość showUnplanned
+            const currentShowUnplanned = this.showUnplanned;
+
+            // Wczytaj aktualną zawartość pliku
+            let content = await this.app.vault.read(file);
             const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
             const match = content.match(frontmatterRegex);
-            
+
             if (match) {
+                console.log("[updateFileDate] Znaleziono frontmatter", {
+                    originalFrontmatter: match[1]
+                });
+
+                // Aktualizuj datę podstawową
                 const frontmatter = match[1];
                 const lines = frontmatter.split('\n');
-                
-                // Escapowanie znaków specjalnych w nazwie pola
                 const escapedFieldName = this.settings.dateField.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const dateFieldRegex = new RegExp(`^${escapedFieldName}:\\s*.*$`);
                 
-                let dateUpdated = false;
-                const updatedLines = lines.map(line => {
-                    if (line.match(dateFieldRegex)) {
-                        dateUpdated = true;
-                        const formattedDate = this.formatDateAsLink(new Date(newDate));
-                        console.log('Aktualizacja linii:', {
-                            stara: line,
-                            nowa: `${this.settings.dateField}: ${formattedDate}`
-                        });
-                        return `${this.settings.dateField}: ${formattedDate}`;
-                    }
-                    return line;
-                });
-
-                // Jeśli nie znaleziono pola daty, dodaj je
-                if (!dateUpdated) {
+                // Usuń pole dates tylko jeśli generowanie jest włączone
+                const updatedLines = lines
+                    .filter(line => {
+                        const trimmed = line.trim();
+                        if (!this.settings.generateDatesField) {
+                            return true; // zachowaj wszystkie linie
+                        }
+                        return !trimmed.startsWith('dates:') && !trimmed.startsWith('- "[[');
+                    })
+                    .filter(line => !line.match(dateFieldRegex)); // Usuń linię z datą
+                
+                // Dodaj nową datę tylko jeśli nie jest null
+                if (newDate !== null) {
                     const formattedDate = this.formatDateAsLink(new Date(newDate));
-                    console.log('Dodawanie nowego pola daty:', formattedDate);
                     updatedLines.push(`${this.settings.dateField}: ${formattedDate}`);
                 }
                 
+                // Zapisz zmiany
                 const newFrontmatter = updatedLines.join('\n');
-                const newContent = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
+                content = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
                 
-                console.log('Nowy frontmatter:', newFrontmatter);
+                console.log("[updateFileDate] Przygotowano nowy frontmatter", {
+                    newFrontmatter
+                });
                 
-                await this.app.vault.modify(file, newContent);
-                await new Promise(resolve => setTimeout(resolve, 100));
+                // Zapisz plik
+                await this.app.vault.modify(file, content);
+                
+                // Poczekaj na pełną aktualizację metadanych
+                await new Promise<void>((resolve) => {
+                    const maxAttempts = 10;
+                    let attempts = 0;
+
+                    const checkMetadata = () => {
+                        attempts++;
+                        const metadata = this.app.metadataCache.getFileCache(file);
+                        const frontmatter = metadata?.frontmatter;
+                        
+                        // Sprawdź czy metadane są zaktualizowane
+                        const isUpdated = newDate === null ? 
+                            !frontmatter?.[this.settings.dateField] :
+                            frontmatter?.[this.settings.dateField] === this.formatDateAsLink(new Date(newDate)).replace(/"/g, '');
+
+                        console.log("[updateFileDate] Sprawdzanie metadanych", {
+                            attempt: attempts,
+                            isUpdated,
+                            currentMetadata: frontmatter
+                        });
+
+                        if (isUpdated || attempts >= maxAttempts) {
+                            resolve();
+                        } else {
+                            setTimeout(checkMetadata, 100);
+                        }
+                    };
+
+                    checkMetadata();
+                });
+
+                // Jeśli to notatka rekurencyjna, zaktualizuj daty
+                if (newDate !== null && this.settings.generateDatesField) {
+                    const metadata = this.app.metadataCache.getFileCache(file);
+                    if (metadata?.frontmatter?.[this.settings.recurrenceField]) {
+                        await this.initializeRecurringNoteDates(file, new Date(newDate));
+                    }
+                }
+
+                // Wymuś odświeżenie cache'u metadanych
                 await this.app.metadataCache.trigger('changed', file);
-            } else {
-                // Jeśli nie ma frontmattera, dodaj go
-                const formattedDate = this.formatDateAsLink(new Date(newDate));
-                const newFrontmatter = `---\n${this.settings.dateField}: ${formattedDate}\n---\n`;
-                const newContent = newFrontmatter + content;
-                
-                console.log('Tworzenie nowego frontmattera:', newFrontmatter);
-                
-                await this.app.vault.modify(file, newContent);
-                await new Promise(resolve => setTimeout(resolve, 100));
-                await this.app.metadataCache.trigger('changed', file);
+
+                // Poczekaj na pełne odświeżenie metadanych
+                await new Promise(resolve => setTimeout(resolve, 200));
+
+                // Wymuś pełne odświeżenie widoku
+                if (this.container && this.currentTag) {
+                    // Wyczyść cały kontener
+                    this.container.empty();
+                    
+                    // Renderuj kalendarz od nowa
+                    await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+                    
+                    // Dodatkowe odświeżenie po krótkim czasie
+                    setTimeout(async () => {
+                        if (this.container && this.currentTag) {
+                            this.container.empty();
+                            await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+                        }
+                    }, 500);
+                }
             }
+
+            console.log("[updateFileDate] Zakończono całą operację");
         } catch (error) {
-            console.error('Błąd podczas aktualizacji daty:', error);
+            console.error("[updateFileDate] Błąd:", error);
         }
     }
 
-    private createDraggableEntry(file: TFile) {
+    private async initializeRecurringNoteDates(file: TFile, originalDate: Date) {
+        try {
+            console.log('Inicjalizacja/aktualizacja dat rekurencyjnych:', {
+                file: file.path,
+                originalDate: originalDate
+            });
+
+            const metadata = this.app.metadataCache.getFileCache(file);
+            if (!metadata?.frontmatter) {
+                console.log('Brak frontmattera w pliku');
+                return;
+            }
+
+            const recurrenceValue = metadata.frontmatter[this.settings.recurrenceField];
+            if (!recurrenceValue) {
+                console.log('Brak wartości pola recurrence');
+                return;
+            }
+
+            // Ustaw godzinę na 12:00, aby uniknąć problemów ze strefą czasową
+            originalDate.setHours(12, 0, 0, 0);
+
+            // Generuj przyszłe daty
+            const dates = await this.generateRecurringDates([file]);
+            if (dates.length === 0) {
+                console.log('Nie wygenerowano żadnych dat');
+                return;
+            }
+
+            const futureDates = dates[0].dates;
+            console.log('Wygenerowane przyszłe daty:', futureDates);
+
+            // Formatuj daty jako linki
+            const dateLinks = futureDates.map(date => {
+                date.setHours(12, 0, 0, 0);
+                return this.formatDateAsLink(date);
+            });
+            
+            // Dodaj oryginalną datę na początek listy i usuń duplikaty
+            dateLinks.unshift(this.formatDateAsLink(originalDate));
+            const uniqueDateLinks = [...new Set(dateLinks)];
+
+            // Wczytaj aktualną zawartość pliku
+            let content = await this.app.vault.read(file);
+            const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
+            const match = content.match(frontmatterRegex);
+
+            if (match) {
+                // Podziel frontmatter na linie
+                const frontmatter = match[1];
+                const lines = frontmatter.split('\n');
+                
+                // Znajdź indeks ostatniej linii frontmattera
+                let lastIndex = lines.length - 1;
+                while (lastIndex >= 0 && lines[lastIndex].trim() === '') {
+                    lastIndex--;
+                }
+
+                // Usuń wszystkie linie związane z dates
+                const newLines = lines.filter((line, index) => {
+                    if (index > lastIndex) return false;
+                    const trimmed = line.trim();
+                    return !trimmed.startsWith('dates:') && !trimmed.startsWith('- "[[');
+                });
+
+                // Dodaj nowe daty na końcu
+                newLines.push('dates:');
+                uniqueDateLinks.forEach(link => {
+                    newLines.push(`  - ${link}`);
+                });
+
+                // Złącz wszystko z powrotem
+                const newFrontmatter = newLines.join('\n');
+                const newContent = content.replace(frontmatterRegex, `---\n${newFrontmatter}\n---`);
+
+                console.log('Aktualizacja frontmattera:', {
+                    stary: frontmatter,
+                    nowy: newFrontmatter
+                });
+
+                await this.app.vault.modify(file, newContent);
+                // Nie ma potrzeby czekać tutaj, bo i tak będziemy odświeżać metadane w updateFileDate
+            }
+        } catch (error) {
+            console.error('Błąd podczas inicjalizacji/aktualizacji dat rekurencyjnych:', error);
+        }
+    }
+
+    private createDraggableEntry(file: TFile, date: Date | null) {
         const entry = document.createElement('div');
         entry.className = 'calendar-entry';
-        entry.textContent = file.basename;
-        entry.setAttribute('draggable', 'true');
-        entry.dataset.filePath = file.path;
         
-        entry.addEventListener('click', (e) => {
+        const metadata = this.app.metadataCache.getFileCache(file);
+        const isRecurring = metadata?.frontmatter?.[this.settings.recurrenceField];
+        
+        if (isRecurring) {
+            entry.classList.add('recurring-entry');
+            const icon = document.createElement('span');
+            icon.className = 'recurring-icon';
+            icon.textContent = '🔄';
+            entry.appendChild(icon);
+            
+            // Sprawdź czy to jest przyszłe wystąpienie
+            const originalDate = this.parseDateFromLink(metadata?.frontmatter?.[this.settings.dateField]);
+            
+            // Dodaj logi do debugowania
+            console.log("[createDraggableEntry] Sprawdzanie dat", {
+                file: file.path,
+                originalDate: originalDate?.toISOString(),
+                currentDate: date?.toISOString(),
+                isOriginalDate: originalDate && date ? 
+                    window.moment(originalDate).format('YYYY-MM-DD') === window.moment(date).format('YYYY-MM-DD') : 
+                    false
+            });
+
+            if (originalDate && date && 
+                window.moment(date).format('YYYY-MM-DD') !== window.moment(originalDate).format('YYYY-MM-DD')) {
+                // Jeśli to przyszłe wystąpienie (ale nie oryginalna data), nie pozwól na przeciąganie
+                entry.classList.add('future-recurring');
+                entry.setAttribute('draggable', 'false');
+                entry.title = 'Nie można przenosić przyszłych wystąpień notatki rekurencyjnej';
+                
+                // Dodaj ikonę blokady
+                const lockIcon = document.createElement('span');
+                lockIcon.className = 'lock-icon';
+                lockIcon.textContent = '🔒';
+                entry.appendChild(lockIcon);
+            } else {
+                // Oryginalna notatka lub wystąpienie w oryginalnej dacie może być przeciągane
+                entry.setAttribute('draggable', 'true');
+                entry.dataset.filePath = file.path;
+            }
+        } else {
+            // Zwykłe notatki mogą być przeciągane
+            entry.setAttribute('draggable', 'true');
+            entry.dataset.filePath = file.path;
+        }
+        
+        const title = document.createElement('span');
+        title.textContent = file.basename;
+        entry.appendChild(title);
+        
+        // Dodaj obsługę przeciągania tylko dla elementów, które można przeciągać
+        if (entry.getAttribute('draggable') === 'true') {
+            entry.addEventListener('dragstart', (e) => {
+                e.dataTransfer?.setData('text/plain', file.path);
+                entry.style.opacity = '0.5';
+            });
+            
+            entry.addEventListener('dragend', () => {
+                entry.style.opacity = '1';
+            });
+        }
+        
+        // Zawsze pozwól na klikanie
+        entry.addEventListener('click', async (e) => {
             e.stopPropagation();
-            this.app.workspace.getLeaf().openFile(file);
-        });
-        
-        entry.addEventListener('dragstart', (e) => {
-            e.dataTransfer?.setData('text/plain', file.path);
-            entry.style.opacity = '0.5';
-        });
-        
-        entry.addEventListener('dragend', () => {
-            entry.style.opacity = '1';
+            await this.app.workspace.getLeaf().openFile(file);
         });
         
         return entry;
     }
 
-    private createDroppableDay(date: Date, entries: TFile[] = []) {
+    private createDroppableDay(date: Date, entries: TFile[] = [], refreshView: () => Promise<void>) {
+        console.log("[createDroppableDay] Start", {
+            date: date.toISOString(),
+            entriesCount: entries.length,
+            entries: entries.map(f => f.path)
+        });
+
         const dayEl = document.createElement('div');
         dayEl.className = 'calendar-day';
         if (entries.length) {
@@ -627,25 +1179,158 @@ export default class TaggedCalendarPlugin extends Plugin {
             const file = this.app.vault.getAbstractFileByPath(filePath);
             if (!(file instanceof TFile)) return;
             
-            const newDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-                .toISOString()
-                .split('T')[0];
+            // Użyj moment.js do formatowania daty
+            const newDate = window.moment(date).format('YYYY-MM-DD');
             
-            await this.updateFileDate(file, newDate);
-            
-            // Pełne przeładowanie widoku
-            this.container.empty();
-            await this.renderCalendar(this.container, this.currentTag);
-            
-            // Wymuś ponowne przerenderowanie widoku
-            this.app.workspace.trigger('layout-change');
+            await this.updateFileDate(file, newDate, refreshView);
         });
         
         entries.forEach(file => {
-            const entry = this.createDraggableEntry(file);
+            const entry = this.createDraggableEntry(file, date);
             dayEl.appendChild(entry);
         });
         
         return dayEl;
+    }
+
+    private createFilterSelector(): HTMLElement {
+        const container = document.createElement('div');
+        container.className = 'filter-selector';
+
+        const select = document.createElement('select');
+        this.filters.forEach((filter, index) => {
+            const option = document.createElement('option');
+            option.value = index.toString();
+            option.textContent = filter.name;
+            select.appendChild(option);
+        });
+
+        select.value = this.currentFilterIndex.toString();
+        select.addEventListener('change', async (e) => {
+            this.currentFilterIndex = parseInt((e.target as HTMLSelectElement).value);
+            if (this.container) {
+                this.container.empty();
+                await this.renderCalendar(this.container, this.filters[this.currentFilterIndex].query, this.showUnplanned);
+            }
+        });
+
+        container.appendChild(select);
+        return container;
+    }
+
+    private async createUnplannedSection(query: string, refreshView: () => Promise<void>): Promise<HTMLElement> {
+        console.log("[createUnplannedSection] Start", {
+            query,
+            showUnplanned: this.showUnplanned
+        });
+
+        const section = document.createElement('div');
+        section.className = 'unplanned-section';
+        
+        const header = document.createElement('h3');
+        header.textContent = 'Niezaplanowane';
+        section.appendChild(header);
+        
+        const itemsContainer = document.createElement('div');
+        itemsContainer.className = 'unplanned-items';
+        
+        // Podziel zapytanie na części, zachowując fragmenty w cudzysłowach
+        const conditions = this.splitQueryPreservingQuotes(query);
+        console.log("[createUnplannedSection] Podzielone warunki:", conditions);
+        
+        // Pobierz pliki bez daty
+        const allFiles = this.app.vault.getMarkdownFiles();
+        const unplannedFiles = allFiles.filter(file => {
+            const metadata = this.app.metadataCache.getFileCache(file);
+            if (!metadata?.frontmatter) return false;
+            
+            // Sprawdź czy nie ma daty
+            if (metadata.frontmatter[this.settings.dateField]) return false;
+            
+            // Sprawdź czy plik spełnia wszystkie warunki
+            let matchesAllConditions = true;
+            for (const condition of conditions) {
+                if (!this.matchesCondition(file, metadata, condition)) {
+                    matchesAllConditions = false;
+                    break;
+                }
+            }
+            
+            return matchesAllConditions;
+        });
+        
+        console.log("[createUnplannedSection] Znalezione pliki:", {
+            count: unplannedFiles.length,
+            files: unplannedFiles.map(f => f.path)
+        });
+        
+        // Dodaj elementy do kontenera
+        unplannedFiles.forEach(file => {
+            const entry = this.createDraggableEntry(file, null);
+            itemsContainer.appendChild(entry);
+        });
+        
+        // Dodaj obsługę upuszczania
+        itemsContainer.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            itemsContainer.classList.add('dragover');
+        });
+        
+        itemsContainer.addEventListener('dragleave', () => {
+            itemsContainer.classList.remove('dragover');
+        });
+        
+        itemsContainer.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            itemsContainer.classList.remove('dragover');
+            
+            const filePath = e.dataTransfer?.getData('text/plain');
+            console.log("[createUnplannedSection:drop] Start", {
+                filePath,
+                showUnplanned: this.showUnplanned
+            });
+
+            if (!filePath) return;
+            
+            const file = this.app.vault.getAbstractFileByPath(filePath);
+            if (!(file instanceof TFile)) return;
+            
+            await this.updateFileDate(file, null, refreshView);
+            
+            console.log("[createUnplannedSection:drop] Zakończono");
+        });
+        
+        section.appendChild(itemsContainer);
+        return section;
+    }
+
+    // Dodaj nową metodę do dzielenia zapytania
+    private splitQueryPreservingQuotes(query: string): string[] {
+        const parts: string[] = [];
+        let currentPart = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < query.length; i++) {
+            const char = query[i];
+            
+            if (char === '"') {
+                inQuotes = !inQuotes;
+                currentPart += char;
+            } else if (char === ' ' && !inQuotes) {
+                if (currentPart.trim()) {
+                    parts.push(currentPart.trim());
+                }
+                currentPart = '';
+            } else {
+                currentPart += char;
+            }
+        }
+        
+        // Dodaj ostatnią część
+        if (currentPart.trim()) {
+            parts.push(currentPart.trim());
+        }
+        
+        return parts.filter(part => part.length > 0);
     }
 } 

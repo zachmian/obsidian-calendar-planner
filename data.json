@@ -1,5 +1,9 @@
 {
   "dateField": "data",
   "dateFormat": "YYYY-MM-DD",
-  "defaultView": "month"
+  "defaultView": "month",
+  "recurringLookAhead": 5,
+  "recurrenceField": "powtarzanie",
+  "generateDatesField": false,
+  "showUnplannedByDefault": true
 }
