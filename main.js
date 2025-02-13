@@ -48,12 +48,13 @@ __export(exports, {
 });
 var import_obsidian = __toModule(require("obsidian"));
 var DEFAULT_SETTINGS = {
-  dateField: "data",
+  dateField: "date",
   dateFormat: "YYYY-MM-DD",
   defaultView: "month",
   recurringLookAhead: 2,
-  recurrenceField: "powtarzanie",
-  generateDatesField: false
+  recurrenceField: "recurrence",
+  generateDatesField: false,
+  newNotesFolder: ""
 };
 var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -86,6 +87,10 @@ var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
     })));
     new import_obsidian.Setting(containerEl).setName("Generuj pole dates").setDesc("Czy generowa\u0107 pole dates w frontmatter dla notatek powtarzalnych. Je\u015Bli wy\u0142\u0105czone, daty b\u0119d\u0105 generowane tylko w kalendarzu.").addToggle((toggle) => toggle.setValue(this.plugin.settings.generateDatesField).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.generateDatesField = value;
+      yield this.plugin.saveSettings();
+    })));
+    new import_obsidian.Setting(containerEl).setName("Folder dla nowych notatek").setDesc('\u015Acie\u017Cka do folderu, w kt\xF3rym b\u0119d\u0105 tworzone nowe notatki (np. "Notatki/2024"). Pozostaw puste, aby u\u017Cywa\u0107 g\u0142\xF3wnego folderu.').addText((text) => text.setPlaceholder("Notatki/2024").setValue(this.plugin.settings.newNotesFolder).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.newNotesFolder = value;
       yield this.plugin.saveSettings();
     })));
   }
@@ -696,7 +701,11 @@ ${newFrontmatter}
           console.log("[updateFileDate] Przygotowano nowy frontmatter", {
             newFrontmatter
           });
-          yield this.app.vault.modify(file, content);
+          if (this.settings.newNotesFolder) {
+            yield this.ensureFolderExists(this.settings.newNotesFolder);
+          }
+          const newFile = yield this.app.vault.create(this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${file.basename}.md` : `${file.basename}.md`, content);
+          yield this.app.workspace.getLeaf().openFile(newFile);
           yield new Promise((resolve) => {
             const maxAttempts = 10;
             let attempts = 0;
@@ -802,6 +811,9 @@ ${newFrontmatter}
             stary: frontmatter,
             nowy: newFrontmatter
           });
+          if (this.settings.newNotesFolder) {
+            yield this.ensureFolderExists(this.settings.newNotesFolder);
+          }
           yield this.app.vault.modify(file, newContent);
         }
       } catch (error) {
@@ -878,10 +890,46 @@ ${newFrontmatter}
     if (date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear()) {
       dayEl.classList.add("today");
     }
+    const addButton = document.createElement("div");
+    addButton.className = "add-entry-button";
+    addButton.title = "Dodaj now\u0105 notatk\u0119";
+    addButton.style.display = "none";
+    dayEl.addEventListener("mouseenter", () => {
+      addButton.style.display = "block";
+    });
+    dayEl.addEventListener("mouseleave", () => {
+      addButton.style.display = "none";
+    });
+    addButton.addEventListener("click", (e) => __async(this, null, function* () {
+      e.stopPropagation();
+      const formattedDate = window.moment(date).format(this.settings.dateFormat);
+      const fileName = `Notatka ${formattedDate}`;
+      const filePath = this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${fileName}.md` : `${fileName}.md`;
+      const currentFilter = this.filters[this.currentFilterIndex];
+      const tags = this.extractTagsFromQuery(currentFilter.query);
+      const frontmatter = [
+        "---",
+        `${this.settings.dateField}: "[[${formattedDate}]]"`,
+        tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
+        "---",
+        "",
+        "# " + fileName
+      ].filter((line) => line !== "").join("\n");
+      if (this.settings.newNotesFolder) {
+        yield this.ensureFolderExists(this.settings.newNotesFolder);
+      }
+      const newFile = yield this.app.vault.create(filePath, frontmatter);
+      yield this.app.workspace.getLeaf().openFile(newFile);
+      if (this.container && this.currentTag) {
+        this.container.empty();
+        yield this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+      }
+    }));
     const dayNumber = document.createElement("div");
     dayNumber.className = "day-number";
     dayNumber.textContent = date.getDate().toString();
     dayEl.appendChild(dayNumber);
+    dayEl.appendChild(addButton);
     dayEl.addEventListener("dragover", (e) => {
       e.preventDefault();
       dayEl.classList.add("dragover");
@@ -937,9 +985,40 @@ ${newFrontmatter}
       });
       const section = document.createElement("div");
       section.className = "unplanned-section";
+      const headerContainer = document.createElement("div");
+      headerContainer.className = "unplanned-header";
       const header = document.createElement("h3");
       header.textContent = "Niezaplanowane";
-      section.appendChild(header);
+      const addButton = document.createElement("div");
+      addButton.className = "add-entry-button";
+      addButton.title = "Dodaj now\u0105 notatk\u0119";
+      addButton.style.display = "block";
+      addButton.addEventListener("click", (e) => __async(this, null, function* () {
+        e.stopPropagation();
+        const fileName = `Notatka ${window.moment().format("YYYYMMDDHHmmss")}`;
+        const filePath = this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${fileName}.md` : `${fileName}.md`;
+        const currentFilter = this.filters[this.currentFilterIndex];
+        const tags = this.extractTagsFromQuery(currentFilter.query);
+        const frontmatter = [
+          "---",
+          tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
+          "---",
+          "",
+          "# " + fileName
+        ].filter((line) => line !== "").join("\n");
+        if (this.settings.newNotesFolder) {
+          yield this.ensureFolderExists(this.settings.newNotesFolder);
+        }
+        const newFile = yield this.app.vault.create(filePath, frontmatter);
+        yield this.app.workspace.getLeaf().openFile(newFile);
+        if (this.container && this.currentTag) {
+          this.container.empty();
+          yield this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+        }
+      }));
+      headerContainer.appendChild(header);
+      headerContainer.appendChild(addButton);
+      section.appendChild(headerContainer);
       const itemsContainer = document.createElement("div");
       itemsContainer.className = "unplanned-items";
       const conditions = this.splitQueryPreservingQuotes(query);
@@ -996,6 +1075,17 @@ ${newFrontmatter}
       return section;
     });
   }
+  extractTagsFromQuery(query) {
+    const tags = [];
+    const parts = this.splitQueryPreservingQuotes(query);
+    parts.forEach((part) => {
+      if (part.startsWith("#") || part.startsWith("tag:")) {
+        const tag = part.startsWith("tag:") ? part.substring(4) : part.substring(1);
+        tags.push(tag);
+      }
+    });
+    return tags;
+  }
   splitQueryPreservingQuotes(query) {
     const parts = [];
     let currentPart = "";
@@ -1018,5 +1108,19 @@ ${newFrontmatter}
       parts.push(currentPart.trim());
     }
     return parts.filter((part) => part.length > 0);
+  }
+  ensureFolderExists(folderPath) {
+    return __async(this, null, function* () {
+      if (!folderPath)
+        return;
+      const folders = folderPath.split("/");
+      let currentPath = "";
+      for (const folder of folders) {
+        currentPath += (currentPath ? "/" : "") + folder;
+        if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+          yield this.app.vault.createFolder(currentPath);
+        }
+      }
+    });
   }
 };

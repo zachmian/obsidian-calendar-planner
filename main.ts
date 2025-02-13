@@ -14,6 +14,7 @@ interface TaggedCalendarSettings {
     recurringLookAhead: number; // ile lat do przodu generować powtórzenia
     recurrenceField: string; // nazwa pola do oznaczania powtarzalności
     generateDatesField: boolean; // czy generować pole dates dla notatek powtarzalnych
+    newNotesFolder: string; // Nowe ustawienie
 }
 
 const DEFAULT_SETTINGS: TaggedCalendarSettings = {
@@ -22,7 +23,8 @@ const DEFAULT_SETTINGS: TaggedCalendarSettings = {
     defaultView: 'month',
     recurringLookAhead: 2,
     recurrenceField: 'recurrence',
-    generateDatesField: false
+    generateDatesField: false,
+    newNotesFolder: '' // Domyślnie pusty (główny folder)
 }
 
 interface CalendarState {
@@ -120,6 +122,17 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.generateDatesField)
                 .onChange(async (value) => {
                     this.plugin.settings.generateDatesField = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Folder dla nowych notatek')
+            .setDesc('Ścieżka do folderu, w którym będą tworzone nowe notatki (np. "Notatki/2024"). Pozostaw puste, aby używać głównego folderu.')
+            .addText(text => text
+                .setPlaceholder('Notatki/2024')
+                .setValue(this.plugin.settings.newNotesFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.newNotesFolder = value;
                     await this.plugin.saveSettings();
                 }));
     }
@@ -900,7 +913,11 @@ export default class TaggedCalendarPlugin extends Plugin {
                 });
                 
                 // Zapisz plik
-                await this.app.vault.modify(file, content);
+                if (this.settings.newNotesFolder) {
+                    await this.ensureFolderExists(this.settings.newNotesFolder);
+                }
+                const newFile = await this.app.vault.create(this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${file.basename}.md` : `${file.basename}.md`, content);
+                await this.app.workspace.getLeaf().openFile(newFile);
                 
                 // Poczekaj na pełną aktualizację metadanych
                 await new Promise<void>((resolve) => {
@@ -1051,6 +1068,9 @@ export default class TaggedCalendarPlugin extends Plugin {
                     nowy: newFrontmatter
                 });
 
+                if (this.settings.newNotesFolder) {
+                    await this.ensureFolderExists(this.settings.newNotesFolder);
+                }
                 await this.app.vault.modify(file, newContent);
                 // Nie ma potrzeby czekać tutaj, bo i tak będziemy odświeżać metadane w updateFileDate
             }
@@ -1146,20 +1166,67 @@ export default class TaggedCalendarPlugin extends Plugin {
         if (entries.length) {
             dayEl.classList.add('has-entries');
         }
-        
-        // Sprawdź czy to dzisiejszy dzień
+
+        // Przywracamy oznaczenie dzisiejszego dnia
         const today = new Date();
         if (date.getDate() === today.getDate() && 
             date.getMonth() === today.getMonth() && 
             date.getFullYear() === today.getFullYear()) {
             dayEl.classList.add('today');
         }
-        
+
+        // Dodajemy przycisk plus
+        const addButton = document.createElement('div');
+        addButton.className = 'add-entry-button';
+        addButton.title = 'Dodaj nową notatkę';
+        addButton.style.display = 'none';
+
+        // Pokazujemy/ukrywamy przycisk przy hover
+        dayEl.addEventListener('mouseenter', () => {
+            addButton.style.display = 'block';
+        });
+        dayEl.addEventListener('mouseleave', () => {
+            addButton.style.display = 'none';
+        });
+
+        // Obsługa kliknięcia w plus
+        addButton.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const formattedDate = window.moment(date).format(this.settings.dateFormat);
+            const fileName = `Notatka ${formattedDate}`;
+            // Dodaj folder do ścieżki pliku jeśli jest ustawiony
+            const filePath = this.settings.newNotesFolder 
+                ? `${this.settings.newNotesFolder}/${fileName}.md`
+                : `${fileName}.md`;
+            const currentFilter = this.filters[this.currentFilterIndex];
+            const tags = this.extractTagsFromQuery(currentFilter.query);
+            const frontmatter = [
+                '---',
+                `${this.settings.dateField}: "[[${formattedDate}]]"`,
+                tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
+                '---',
+                '',
+                '# ' + fileName
+            ].filter(line => line !== '').join('\n');
+
+            if (this.settings.newNotesFolder) {
+                await this.ensureFolderExists(this.settings.newNotesFolder);
+            }
+            const newFile = await this.app.vault.create(filePath, frontmatter);
+            await this.app.workspace.getLeaf().openFile(newFile);
+            
+            if (this.container && this.currentTag) {
+                this.container.empty();
+                await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+            }
+        });
+
         const dayNumber = document.createElement('div');
         dayNumber.className = 'day-number';
         dayNumber.textContent = date.getDate().toString();
         dayEl.appendChild(dayNumber);
-        
+        dayEl.appendChild(addButton);
+
         dayEl.addEventListener('dragover', (e) => {
             e.preventDefault();
             dayEl.classList.add('dragover');
@@ -1226,11 +1293,51 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         const section = document.createElement('div');
         section.className = 'unplanned-section';
-        
+
+        const headerContainer = document.createElement('div');
+        headerContainer.className = 'unplanned-header';
+
         const header = document.createElement('h3');
         header.textContent = 'Niezaplanowane';
-        section.appendChild(header);
-        
+
+        const addButton = document.createElement('div');
+        addButton.className = 'add-entry-button';
+        addButton.title = 'Dodaj nową notatkę';
+        addButton.style.display = 'block'; // Ten plus jest zawsze widoczny
+
+        addButton.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const fileName = `Notatka ${window.moment().format('YYYYMMDDHHmmss')}`;
+            // Dodaj folder do ścieżki pliku jeśli jest ustawiony
+            const filePath = this.settings.newNotesFolder 
+                ? `${this.settings.newNotesFolder}/${fileName}.md`
+                : `${fileName}.md`;
+            const currentFilter = this.filters[this.currentFilterIndex];
+            const tags = this.extractTagsFromQuery(currentFilter.query);
+            const frontmatter = [
+                '---',
+                tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
+                '---',
+                '',
+                '# ' + fileName
+            ].filter(line => line !== '').join('\n');
+
+            if (this.settings.newNotesFolder) {
+                await this.ensureFolderExists(this.settings.newNotesFolder);
+            }
+            const newFile = await this.app.vault.create(filePath, frontmatter);
+            await this.app.workspace.getLeaf().openFile(newFile);
+            
+            if (this.container && this.currentTag) {
+                this.container.empty();
+                await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+            }
+        });
+
+        headerContainer.appendChild(header);
+        headerContainer.appendChild(addButton);
+        section.appendChild(headerContainer);
+
         const itemsContainer = document.createElement('div');
         itemsContainer.className = 'unplanned-items';
         
@@ -1304,6 +1411,21 @@ export default class TaggedCalendarPlugin extends Plugin {
         return section;
     }
 
+    // Dodajemy nową metodę do wyciągania tagów z zapytania
+    private extractTagsFromQuery(query: string): string[] {
+        const tags: string[] = [];
+        const parts = this.splitQueryPreservingQuotes(query);
+        
+        parts.forEach(part => {
+            if (part.startsWith('#') || part.startsWith('tag:')) {
+                const tag = part.startsWith('tag:') ? part.substring(4) : part.substring(1);
+                tags.push(tag);
+            }
+        });
+        
+        return tags;
+    }
+
     // Dodaj nową metodę do dzielenia zapytania
     private splitQueryPreservingQuotes(query: string): string[] {
         const parts: string[] = [];
@@ -1332,5 +1454,19 @@ export default class TaggedCalendarPlugin extends Plugin {
         }
         
         return parts.filter(part => part.length > 0);
+    }
+
+    private async ensureFolderExists(folderPath: string): Promise<void> {
+        if (!folderPath) return;
+        
+        const folders = folderPath.split('/');
+        let currentPath = '';
+        
+        for (const folder of folders) {
+            currentPath += (currentPath ? '/' : '') + folder;
+            if (!this.app.vault.getAbstractFileByPath(currentPath)) {
+                await this.app.vault.createFolder(currentPath);
+            }
+        }
     }
 } 
