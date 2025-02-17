@@ -704,8 +704,7 @@ ${newFrontmatter}
           if (this.settings.newNotesFolder) {
             yield this.ensureFolderExists(this.settings.newNotesFolder);
           }
-          const newFile = yield this.app.vault.create(this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${file.basename}.md` : `${file.basename}.md`, content);
-          yield this.app.workspace.getLeaf().openFile(newFile);
+          yield this.app.vault.modify(file, content);
           yield new Promise((resolve) => {
             const maxAttempts = 10;
             let attempts = 0;

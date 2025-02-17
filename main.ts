@@ -916,8 +916,10 @@ export default class TaggedCalendarPlugin extends Plugin {
                 if (this.settings.newNotesFolder) {
                     await this.ensureFolderExists(this.settings.newNotesFolder);
                 }
-                const newFile = await this.app.vault.create(this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${file.basename}.md` : `${file.basename}.md`, content);
-                await this.app.workspace.getLeaf().openFile(newFile);
+                await this.app.vault.modify(file, content);
+                
+                // Usuwamy linię otwierającą plik
+                // await this.app.workspace.getLeaf().openFile(file);
                 
                 // Poczekaj na pełną aktualizację metadanych
                 await new Promise<void>((resolve) => {
