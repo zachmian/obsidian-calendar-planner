@@ -1,7 +1,7 @@
 {
   "id": "obsidian-calendar-planner",
   "name": "Calendar Planner",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "minAppVersion": "0.15.0",
   "description": "Wyświetla kalendarz z wpisami o określonym tagu, bazując na dowiązaniu do Codziennej notatki.",
   "author": "Damian Zachwieja @ ztechnicznego.pl",

@@ -26,6 +26,7 @@ Calendar Planner to plugin do Obsidian, który umożliwia wizualizację i zarzą
 - [x] Możliwość tworzenia powtarzalnych notatek
 - [x] Możliwość dodawania kilku filtrów do jednego kalendarza
 - [x] Przycisk do dodawania notatek w konkretnych dniach
+- [x] Obsługa widoku responsywnego (listy) na potrzeby urządzeń mobilnych
 - [ ] Generowanie odnośników do dat wszystkich powtórzeń (dla powtarzalnych notatek)
 - [ ] Wsparcie dla języka angielskiego (obecnie wtyczka działa w większości w języku polskim)
 
