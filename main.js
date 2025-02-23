@@ -98,15 +98,26 @@ var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
 var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
+    this.container = null;
+    this.currentTag = "";
     this.filters = [];
     this.currentFilterIndex = 0;
     this.activeLeaf = null;
     this.virtualFileCache = new Map();
     this.showUnplanned = false;
+    this.currentView = "month";
+    this.currentDate = new Date();
+    this.showPastDays = false;
   }
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
+      const isMobile = window.innerWidth <= 700;
+      if (isMobile && this.settings.defaultView !== "week") {
+        this.settings.defaultView = "week";
+        yield this.saveSettings();
+      }
+      this.currentView = this.settings.defaultView;
       this.addSettingTab(new TaggedCalendarSettingTab(this.app, this));
       this.registerMarkdownCodeBlockProcessor("calendar-planner", (source, el, ctx) => __async(this, null, function* () {
         const lines = source.split("\n").filter((line) => line.trim());
@@ -152,7 +163,6 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
           yield this.renderCalendar(this.container, this.currentTag);
         }
       })));
-      this.currentView = this.settings.defaultView;
       this.currentDate = new Date();
     });
   }
@@ -239,7 +249,10 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         `;
       viewToggle.value = this.currentView;
       viewToggle.addEventListener("change", (e) => {
-        this.currentView = e.target.value;
+        const target = e.target;
+        this.currentView = target.value;
+        this.settings.defaultView = this.currentView;
+        this.saveSettings();
         state.view = this.currentView;
         updateCalendar();
       });
@@ -254,25 +267,26 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
       const gridContainer = document.createElement("div");
       gridContainer.className = "calendar-grid-container";
       container.appendChild(gridContainer);
-      console.log("[renderCalendar] Pobieranie przefiltrowanych plik\xF3w");
-      const filteredFiles = yield this.getFilteredFiles(query);
-      console.log("[renderCalendar] Otrzymano przefiltrowane pliki", {
-        count: filteredFiles.length,
-        files: filteredFiles.map((f) => ({
-          path: f.file.path,
-          date: f.date.toISOString()
-        }))
-      });
-      const refreshView = () => __async(this, null, function* () {
-        console.log("[refreshView] Start", {
-          showUnplanned: this.showUnplanned,
-          currentTag: this.currentTag,
-          stackTrace: new Error().stack
-        });
+      const updateCalendar = () => __async(this, null, function* () {
         gridContainer.innerHTML = "";
-        const oldUnplannedContainer = container.querySelector(".unplanned-container");
-        if (oldUnplannedContainer) {
-          oldUnplannedContainer.remove();
+        const existingToggle = container.querySelector(".toggle-past-days");
+        if (existingToggle) {
+          existingToggle.remove();
+        }
+        const existingUnplanned = container.querySelector(".unplanned-container");
+        if (existingUnplanned) {
+          existingUnplanned.remove();
+        }
+        if (state.view === "month") {
+          const togglePastButton = document.createElement("button");
+          togglePastButton.className = "toggle-past-days";
+          togglePastButton.textContent = this.showPastDays ? "Ukryj poprzednie dni" : "Poka\u017C poprzednie dni";
+          togglePastButton.addEventListener("click", () => {
+            this.showPastDays = !this.showPastDays;
+            togglePastButton.textContent = this.showPastDays ? "Ukryj poprzednie dni" : "Poka\u017C poprzednie dni";
+            refreshView();
+          });
+          container.insertBefore(togglePastButton, gridContainer);
         }
         if (state.view === "month") {
           yield this.renderMonthView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
@@ -287,9 +301,27 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
           newUnplannedContainer.appendChild(unplannedSection);
           container.appendChild(newUnplannedContainer);
         }
+        const calendarGrid = gridContainer.querySelector(".calendar-grid");
+        if (calendarGrid) {
+          if (this.showPastDays) {
+            calendarGrid.classList.add("show-past");
+          } else {
+            calendarGrid.classList.remove("show-past");
+          }
+        }
       });
-      const updateCalendar = () => __async(this, null, function* () {
-        yield refreshView();
+      const refreshView = () => __async(this, null, function* () {
+        console.log("[refreshView] Start", {
+          showUnplanned: this.showUnplanned,
+          currentTag: this.currentTag,
+          stackTrace: new Error().stack
+        });
+        gridContainer.innerHTML = "";
+        const oldUnplannedContainer = container.querySelector(".unplanned-container");
+        if (oldUnplannedContainer) {
+          oldUnplannedContainer.remove();
+        }
+        yield updateCalendar();
         const monthNamesGenitive = [
           "stycznia",
           "lutego",
@@ -338,7 +370,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
           }
         }
       });
-      yield updateCalendar();
+      yield refreshView();
     });
   }
   formatDateAsLink(date) {
@@ -571,12 +603,11 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
   renderMonthView(container, date, query, refreshView) {
     return __async(this, null, function* () {
       var _a;
-      console.log("[renderMonthView] Start", {
-        date: date.toISOString(),
-        query
-      });
       const calendar = document.createElement("div");
       calendar.className = "calendar-grid";
+      if (this.showPastDays) {
+        calendar.classList.add("show-past");
+      }
       const daysOfWeek = ["Pon", "Wt", "\u015Ar", "Czw", "Pt", "Sob", "Niedz"];
       daysOfWeek.forEach((day) => {
         const dayHeader = document.createElement("div");
@@ -610,13 +641,13 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
         const dateStr = window.moment(currentDate).format("YYYY-MM-DD");
         const entries = taggedFiles.get(dateStr) || [];
-        console.log("[renderMonthView] Renderowanie dnia", {
-          date: dateStr,
-          currentDate: currentDate.toISOString(),
-          entriesCount: entries.length,
-          entries: entries.map((f) => f.path)
-        });
         const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        currentDate.setHours(0, 0, 0, 0);
+        if (currentDate < today) {
+          dayEl.classList.add("past-day");
+        }
         calendar.appendChild(dayEl);
       }
       container.appendChild(calendar);
@@ -627,6 +658,9 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
       var _a;
       const calendar = document.createElement("div");
       calendar.className = "calendar-grid";
+      if (this.showPastDays) {
+        calendar.classList.add("show-past");
+      }
       const daysOfWeek = ["Pon", "Wt", "\u015Ar", "Czw", "Pt", "Sob", "Niedz"];
       daysOfWeek.forEach((day) => {
         const dayHeader = document.createElement("div");
@@ -927,6 +961,8 @@ ${newFrontmatter}
     const dayNumber = document.createElement("div");
     dayNumber.className = "day-number";
     dayNumber.textContent = date.getDate().toString();
+    const dayNames = ["Niedziela", "Poniedzia\u0142ek", "Wtorek", "\u015Aroda", "Czwartek", "Pi\u0105tek", "Sobota"];
+    dayNumber.setAttribute("data-day-name", dayNames[date.getDay()]);
     dayEl.appendChild(dayNumber);
     dayEl.appendChild(addButton);
     dayEl.addEventListener("dragover", (e) => {
@@ -1120,6 +1156,43 @@ ${newFrontmatter}
           yield this.app.vault.createFolder(currentPath);
         }
       }
+    });
+  }
+  renderListView(container, date, query, refreshView) {
+    return __async(this, null, function* () {
+      var _a;
+      const calendar = document.createElement("div");
+      calendar.className = "calendar-grid";
+      if (this.showPastDays) {
+        calendar.classList.add("show-past");
+      }
+      const files = yield this.getFilteredFiles(query);
+      const taggedFiles = new Map();
+      for (const { file, date: fileDate } of files) {
+        const dateStr = window.moment(fileDate).format("YYYY-MM-DD");
+        if (!taggedFiles.has(dateStr)) {
+          taggedFiles.set(dateStr, []);
+        }
+        (_a = taggedFiles.get(dateStr)) == null ? void 0 : _a.push(file);
+      }
+      const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
+      const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+      for (let day = 1; day <= lastDay.getDate(); day++) {
+        const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
+        const dateStr = window.moment(currentDate).format("YYYY-MM-DD");
+        const entries = taggedFiles.get(dateStr) || [];
+        const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        currentDate.setHours(0, 0, 0, 0);
+        if (currentDate < today) {
+          dayEl.classList.add("past-day");
+        }
+        if (currentDate >= today || this.showPastDays) {
+          calendar.appendChild(dayEl);
+        }
+      }
+      container.appendChild(calendar);
     });
   }
 };

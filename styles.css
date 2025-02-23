@@ -278,4 +278,107 @@ select {
     position: relative;
     top: auto;
     right: auto;
+}
+
+/* Styl dla widoku listy na wąskich ekranach */
+@media screen and (max-width: 700px) {
+    .calendar-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .calendar-header {
+        display: none;
+    }
+
+    .calendar-day {
+        display: flex;
+        flex-direction: column;
+        padding: 10px;
+        min-height: auto;
+    }
+
+    .day-number {
+        position: relative;
+        left: 0;
+        top: 0;
+        transform: none;
+        font-size: 1.2em;
+        margin-bottom: 10px;
+    }
+
+    .calendar-entry {
+        width: auto;
+        margin: 4px 0;
+    }
+
+    .calendar-day.empty {
+        display: none;
+    }
+
+    .day-number::after {
+        content: attr(data-day-name);
+        margin-left: 5px;
+        font-weight: normal;
+        font-size: 0.9em;
+    }
+
+    .add-entry-button {
+        top: 7px;
+        right: 10px;
+        transform: none;
+    }
+}
+
+/* Styl dla przycisku przełączającego - domyślnie ukryty na dużych ekranach */
+.toggle-past-days {
+    display: none;
+    width: 100%;
+    margin: 10px 0;
+    padding: 8px;
+    background-color: var(--background-modifier-border);
+    border: none;
+    border-radius: 4px;
+    color: var(--text-normal);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+}
+
+.toggle-past-days:hover {
+    background-color: var(--background-modifier-border-hover);
+}
+
+@media screen and (max-width: 700px) {
+    .toggle-past-days {
+        display: block !important;
+        margin: 10px 0;
+    }
+
+    /* Ukryj przeszłe dni, chyba że showPastDays jest true */
+    .calendar-day.past-day {
+        display: none;
+    }
+
+    /* Pokaż przeszłe dni, gdy mają klasę show-past */
+    .calendar-grid.show-past .calendar-day.past-day {
+        display: flex;
+    }
+
+    /* Dodaj separator między dniami */
+    .calendar-day {
+        border-bottom: 1px solid var(--background-modifier-border);
+        margin-bottom: 8px;
+        padding-bottom: 12px;
+    }
+
+    /* Wyróżnij dzisiejszy dzień */
+    .calendar-day.today {
+        border: 2px solid var(--interactive-accent);
+        border-radius: 4px;
+        padding: 12px;
+        margin: 8px 0;
+    }
 } 

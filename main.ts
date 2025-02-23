@@ -140,18 +140,28 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
 
 export default class TaggedCalendarPlugin extends Plugin {
     settings: TaggedCalendarSettings;
-    private container: HTMLElement;
-    private currentTag: string;
+    private container: HTMLElement | null = null;
+    private currentTag: string = '';
     private filters: Filter[] = [];
     private currentFilterIndex: number = 0;
     private activeLeaf: WorkspaceLeaf | null = null;
     private virtualFileCache: Map<string, any> = new Map(); // Cache dla wirtualnych plików
     private showUnplanned: boolean = false;
-    private currentView: 'month' | 'week';
-    private currentDate: Date;
+    private currentView: 'month' | 'week' = 'month';
+    private currentDate: Date = new Date();
+    private showPastDays: boolean = false;
 
     async onload() {
         await this.loadSettings();
+        
+        // Sprawdź czy to urządzenie mobilne i ustaw odpowiedni widok
+        const isMobile = window.innerWidth <= 700;
+        if (isMobile && this.settings.defaultView !== 'week') {
+            this.settings.defaultView = 'week';
+            await this.saveSettings();
+        }
+        
+        this.currentView = this.settings.defaultView;
 
         // Dodaj panel ustawień
         this.addSettingTab(new TaggedCalendarSettingTab(this.app, this));
@@ -224,7 +234,6 @@ export default class TaggedCalendarPlugin extends Plugin {
             })
         );
 
-        this.currentView = this.settings.defaultView;
         this.currentDate = new Date();
     }
 
@@ -328,7 +337,10 @@ export default class TaggedCalendarPlugin extends Plugin {
         `;
         viewToggle.value = this.currentView;
         viewToggle.addEventListener('change', (e) => {
-            this.currentView = (e.target as HTMLSelectElement).value as 'month' | 'week';
+            const target = e.target as HTMLSelectElement;
+            this.currentView = target.value as 'month' | 'week';
+            this.settings.defaultView = this.currentView;
+            this.saveSettings();
             state.view = this.currentView;
             updateCalendar();
         });
@@ -350,18 +362,62 @@ export default class TaggedCalendarPlugin extends Plugin {
         gridContainer.className = 'calendar-grid-container';
         container.appendChild(gridContainer);
 
-        // Pobierz wszystkie pliki pasujące do zapytania
-        console.log("[renderCalendar] Pobieranie przefiltrowanych plików");
-        const filteredFiles = await this.getFilteredFiles(query);
-        console.log("[renderCalendar] Otrzymano przefiltrowane pliki", {
-            count: filteredFiles.length,
-            files: filteredFiles.map(f => ({
-                path: f.file.path,
-                date: f.date.toISOString()
-            }))
-        });
+        const updateCalendar = async () => {
+            gridContainer.innerHTML = '';
+            
+            // Usuń istniejący przycisk toggle, jeśli istnieje
+            const existingToggle = container.querySelector('.toggle-past-days');
+            if (existingToggle) {
+                existingToggle.remove();
+            }
 
-        // Funkcja odświeżająca widok
+            // Usuń istniejącą sekcję niezaplanowanych
+            const existingUnplanned = container.querySelector('.unplanned-container');
+            if (existingUnplanned) {
+                existingUnplanned.remove();
+            }
+
+            // Dodaj przycisk toggle tylko dla widoku miesięcznego
+            if (state.view === 'month') {
+                const togglePastButton = document.createElement('button');
+                togglePastButton.className = 'toggle-past-days';
+                togglePastButton.textContent = this.showPastDays ? 'Ukryj poprzednie dni' : 'Pokaż poprzednie dni';
+                togglePastButton.addEventListener('click', () => {
+                    this.showPastDays = !this.showPastDays;
+                    togglePastButton.textContent = this.showPastDays ? 'Ukryj poprzednie dni' : 'Pokaż poprzednie dni';
+                    refreshView();
+                });
+                container.insertBefore(togglePastButton, gridContainer);
+            }
+
+            if (state.view === 'month') {
+                await this.renderMonthView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
+            } else {
+                await this.renderWeekView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
+            }
+
+            // Odśwież sekcję niezaplanowanych
+            if (this.showUnplanned) {
+                console.log("[refreshView] Dodaję sekcję niezaplanowanych");
+                const newUnplannedContainer = document.createElement('div');
+                newUnplannedContainer.className = 'unplanned-container';
+                const unplannedSection = await this.createUnplannedSection(this.currentTag, refreshView);
+                newUnplannedContainer.appendChild(unplannedSection);
+                container.appendChild(newUnplannedContainer);
+            }
+
+            // Dodaj klasę show-past do kalendarza jeśli potrzeba
+            const calendarGrid = gridContainer.querySelector('.calendar-grid');
+            if (calendarGrid) {
+                if (this.showPastDays) {
+                    calendarGrid.classList.add('show-past');
+                } else {
+                    calendarGrid.classList.remove('show-past');
+                }
+            }
+        };
+
+        // Funkcja aktualizująca kalendarz
         const refreshView = async () => {
             console.log("[refreshView] Start", {
                 showUnplanned: this.showUnplanned,
@@ -379,26 +435,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             }
 
             // Odśwież siatkę kalendarza
-            if (state.view === 'month') {
-                await this.renderMonthView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
-            } else {
-                await this.renderWeekView(gridContainer, state.currentDate, this.filters[this.currentFilterIndex].query, refreshView);
-            }
-
-            // Odśwież sekcję niezaplanowanych
-            if (this.showUnplanned) {
-                console.log("[refreshView] Dodaję sekcję niezaplanowanych");
-                const newUnplannedContainer = document.createElement('div');
-                newUnplannedContainer.className = 'unplanned-container';
-                const unplannedSection = await this.createUnplannedSection(this.currentTag, refreshView);
-                newUnplannedContainer.appendChild(unplannedSection);
-                container.appendChild(newUnplannedContainer);
-            }
-        };
-
-        // Funkcja aktualizująca kalendarz
-        const updateCalendar = async () => {
-            await refreshView();
+            await updateCalendar();
 
             // Aktualizuj etykietę daty
             const monthNamesGenitive = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 
@@ -430,7 +467,7 @@ export default class TaggedCalendarPlugin extends Plugin {
         };
 
         // Inicjalne renderowanie
-        await updateCalendar();
+        await refreshView();
     }
 
     private formatDateAsLink(date: Date): string {
@@ -736,14 +773,14 @@ export default class TaggedCalendarPlugin extends Plugin {
     }
 
     private async renderMonthView(container: HTMLElement, date: Date, query: string, refreshView: () => Promise<void>) {
-        console.log("[renderMonthView] Start", {
-            date: date.toISOString(),
-            query
-        });
-
         const calendar = document.createElement('div');
         calendar.className = 'calendar-grid';
         
+        // Dodaj klasę show-past jeśli potrzeba
+        if (this.showPastDays) {
+            calendar.classList.add('show-past');
+        }
+
         // Nagłówki dni tygodnia
         const daysOfWeek = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Niedz'];
         daysOfWeek.forEach(day => {
@@ -788,19 +825,21 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         // Dodaj dni miesiąca
         for (let day = 1; day <= lastDay.getDate(); day++) {
-            // Ustaw godzinę na 12:00 aby uniknąć problemów ze strefą czasową
             const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
             const dateStr = window.moment(currentDate).format('YYYY-MM-DD');
             const entries = taggedFiles.get(dateStr) || [];
             
-            console.log("[renderMonthView] Renderowanie dnia", {
-                date: dateStr,
-                currentDate: currentDate.toISOString(),
-                entriesCount: entries.length,
-                entries: entries.map(f => f.path)
-            });
-            
             const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
+            
+            // Dodaj klasę dla dni przed dzisiejszym
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            currentDate.setHours(0, 0, 0, 0);
+            
+            if (currentDate < today) {
+                dayEl.classList.add('past-day');
+            }
+            
             calendar.appendChild(dayEl);
         }
 
@@ -811,6 +850,11 @@ export default class TaggedCalendarPlugin extends Plugin {
         const calendar = document.createElement('div');
         calendar.className = 'calendar-grid';
         
+        // Dodaj klasę show-past jeśli potrzeba
+        if (this.showPastDays) {
+            calendar.classList.add('show-past');
+        }
+
         // Nagłówki dni tygodnia
         const daysOfWeek = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Niedz'];
         daysOfWeek.forEach(day => {
@@ -1226,6 +1270,11 @@ export default class TaggedCalendarPlugin extends Plugin {
         const dayNumber = document.createElement('div');
         dayNumber.className = 'day-number';
         dayNumber.textContent = date.getDate().toString();
+        
+        // Dodaj nazwę dnia tygodnia jako atrybut data
+        const dayNames = ['Niedziela', 'Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota'];
+        dayNumber.setAttribute('data-day-name', dayNames[date.getDay()]);
+        
         dayEl.appendChild(dayNumber);
         dayEl.appendChild(addButton);
 
@@ -1470,5 +1519,59 @@ export default class TaggedCalendarPlugin extends Plugin {
                 await this.app.vault.createFolder(currentPath);
             }
         }
+    }
+
+    private async renderListView(container: HTMLElement, date: Date, query: string, refreshView: () => Promise<void>) {
+        const calendar = document.createElement('div');
+        calendar.className = 'calendar-grid';
+        
+        // Dodaj klasę show-past jeśli potrzeba
+        if (this.showPastDays) {
+            calendar.classList.add('show-past');
+        }
+
+        // Zbierz pliki spełniające kryteria wyszukiwania
+        const files = await this.getFilteredFiles(query);
+        const taggedFiles = new Map<string, TFile[]>();
+
+        // Mapuj pliki na daty
+        for (const {file, date: fileDate} of files) {
+            const dateStr = window.moment(fileDate).format('YYYY-MM-DD');
+            
+            if (!taggedFiles.has(dateStr)) {
+                taggedFiles.set(dateStr, []);
+            }
+            taggedFiles.get(dateStr)?.push(file);
+        }
+
+        // Pierwszy i ostatni dzień miesiąca
+        const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
+        const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+
+        // Dodaj dni miesiąca
+        for (let day = 1; day <= lastDay.getDate(); day++) {
+            const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
+            const dateStr = window.moment(currentDate).format('YYYY-MM-DD');
+            const entries = taggedFiles.get(dateStr) || [];
+            
+            const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
+            
+            // Dodaj klasę dla dni przed dzisiejszym
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            currentDate.setHours(0, 0, 0, 0);
+            
+            if (currentDate < today) {
+                dayEl.classList.add('past-day');
+            }
+            
+            // Dodaj tylko jeśli jest to dzisiejszy dzień lub przyszły,
+            // lub jeśli showPastDays jest true
+            if (currentDate >= today || this.showPastDays) {
+                calendar.appendChild(dayEl);
+            }
+        }
+
+        container.appendChild(calendar);
     }
 } 
