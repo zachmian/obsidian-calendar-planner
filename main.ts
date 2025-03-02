@@ -96,7 +96,7 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
             .setName('Okres powtarzania')
             .setDesc('Ile lat do przodu generować powtarzające się notatki')
             .addSlider(slider => slider
-                .setLimits(1, 5, 1)
+                .setLimits(1, 10, 1)
                 .setValue(this.plugin.settings.recurringLookAhead)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
@@ -318,7 +318,33 @@ export default class TaggedCalendarPlugin extends Plugin {
         });
 
         const dateLabel = document.createElement('span');
-        dateLabel.style.margin = '0 10px';
+        dateLabel.className = 'current-month-label';
+
+        // Funkcja aktualizacji nagłówka
+        const updateHeader = () => {
+            const monthNamesNominative = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec', 
+                                  'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+            const monthNamesGenitive = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 
+                                  'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
+            
+            let headerText = '';
+            if (state.view === 'month') {
+                headerText = `${monthNamesNominative[state.currentDate.getMonth()]} ${state.currentDate.getFullYear()}`;
+            } else {
+                const weekStart = new Date(state.currentDate);
+                weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
+                const weekEnd = new Date(weekStart);
+                weekEnd.setDate(weekStart.getDate() + 6);
+                
+                if (weekStart.getMonth() === weekEnd.getMonth()) {
+                    headerText = `${weekStart.getDate()} - ${weekEnd.getDate()} ${monthNamesGenitive[weekStart.getMonth()]} ${weekStart.getFullYear()}`;
+                } else {
+                    headerText = `${weekStart.getDate()} ${monthNamesGenitive[weekStart.getMonth()]} - ${weekEnd.getDate()} ${monthNamesGenitive[weekEnd.getMonth()]} ${weekStart.getFullYear()}`;
+                }
+            }
+            
+            dateLabel.textContent = headerText;
+        };
 
         navigationDiv.appendChild(prevButton);
         navigationDiv.appendChild(todayButton);
@@ -361,6 +387,9 @@ export default class TaggedCalendarPlugin extends Plugin {
         const gridContainer = document.createElement('div');
         gridContainer.className = 'calendar-grid-container';
         container.appendChild(gridContainer);
+
+        // Wywołaj updateHeader po inicjalizacji
+        updateHeader();
 
         const updateCalendar = async () => {
             gridContainer.innerHTML = '';
@@ -415,6 +444,9 @@ export default class TaggedCalendarPlugin extends Plugin {
                     calendarGrid.classList.remove('show-past');
                 }
             }
+
+            // Dodaj wywołanie updateHeader w updateCalendar
+            updateHeader();
         };
 
         // Funkcja aktualizująca kalendarz
@@ -424,46 +456,19 @@ export default class TaggedCalendarPlugin extends Plugin {
                 currentTag: this.currentTag,
                 stackTrace: new Error().stack
             });
-
-            // Wyczyść siatkę kalendarza
-            gridContainer.innerHTML = '';
             
-            // Usuń stary kontener niezaplanowanych
+            // Zamiast czyścić cały kontener, można usunąć tylko zmienione elementy
+            const oldCalendarGrid = gridContainer.querySelector('.calendar-grid');
+            if (oldCalendarGrid) {
+                oldCalendarGrid.remove();
+            }
+            
             const oldUnplannedContainer = container.querySelector('.unplanned-container');
             if (oldUnplannedContainer) {
                 oldUnplannedContainer.remove();
             }
-
-            // Odśwież siatkę kalendarza
-            await updateCalendar();
-
-            // Aktualizuj etykietę daty
-            const monthNamesGenitive = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 
-                                      'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
-            const monthNamesNominative = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
-                                        'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
             
-            if (state.view === 'month') {
-                dateLabel.textContent = `${monthNamesNominative[state.currentDate.getMonth()]} ${state.currentDate.getFullYear()}`;
-            } else {
-                const weekStart = new Date(state.currentDate);
-                weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
-                const weekEnd = new Date(weekStart);
-                weekEnd.setDate(weekEnd.getDate() + 6);
-
-                const startMonth = monthNamesGenitive[weekStart.getMonth()];
-                const endMonth = monthNamesGenitive[weekEnd.getMonth()];
-                const startYear = weekStart.getFullYear();
-                const endYear = weekEnd.getFullYear();
-
-                if (startMonth === endMonth && startYear === endYear) {
-                    dateLabel.textContent = `${weekStart.getDate()} - ${weekEnd.getDate()} ${startMonth} ${startYear}`;
-                } else if (startYear === endYear) {
-                    dateLabel.textContent = `${weekStart.getDate()} ${startMonth} - ${weekEnd.getDate()} ${endMonth} ${startYear}`;
-                } else {
-                    dateLabel.textContent = `${weekStart.getDate()} ${startMonth} ${startYear} - ${weekEnd.getDate()} ${endMonth} ${endYear}`;
-                }
-            }
+            await updateCalendar();
         };
 
         // Inicjalne renderowanie
@@ -792,24 +797,7 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         // Zbierz pliki spełniające kryteria wyszukiwania
         const files = await this.getFilteredFiles(query);
-        const taggedFiles = new Map<string, TFile[]>();
-
-        // Mapuj pliki na daty
-        for (const {file, date: fileDate} of files) {
-            // Użyj moment.js do formatowania daty w lokalnej strefie czasowej
-            const dateStr = window.moment(fileDate).format('YYYY-MM-DD');
-            
-            console.log("[renderMonthView] Mapowanie pliku na datę", {
-                file: file.path,
-                date: dateStr,
-                originalDate: fileDate
-            });
-
-            if (!taggedFiles.has(dateStr)) {
-                taggedFiles.set(dateStr, []);
-            }
-            taggedFiles.get(dateStr)?.push(file);
-        }
+        const taggedFiles = await this.mapFilesToDates(files);
 
         // Pierwszy i ostatni dzień miesiąca
         const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -866,17 +854,7 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         // Zbierz pliki spełniające kryteria wyszukiwania
         const files = await this.getFilteredFiles(query);
-        const taggedFiles = new Map<string, TFile[]>();
-
-        for (const {file, date: fileDate} of files) {
-            const localDate = new Date(fileDate.getTime() - fileDate.getTimezoneOffset() * 60000);
-            const dateStr = localDate.toISOString().split('T')[0];
-            
-            if (!taggedFiles.has(dateStr)) {
-                taggedFiles.set(dateStr, []);
-            }
-            taggedFiles.get(dateStr)?.push(file);
-        }
+        const taggedFiles = await this.mapFilesToDates(files);
 
         // Znajdź początek tygodnia
         const weekStart = new Date(date);
@@ -887,8 +865,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             const currentDate = new Date(weekStart);
             currentDate.setDate(currentDate.getDate() + i);
             
-            const localDate = new Date(currentDate.getTime() - currentDate.getTimezoneOffset() * 60000);
-            const dateStr = localDate.toISOString().split('T')[0];
+            const dateStr = window.moment(currentDate).format('YYYY-MM-DD');
             const entries = taggedFiles.get(dateStr) || [];
             
             const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
@@ -1278,28 +1255,8 @@ export default class TaggedCalendarPlugin extends Plugin {
         dayEl.appendChild(dayNumber);
         dayEl.appendChild(addButton);
 
-        dayEl.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dayEl.classList.add('dragover');
-        });
-        
-        dayEl.addEventListener('dragleave', () => {
-            dayEl.classList.remove('dragover');
-        });
-        
-        dayEl.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            dayEl.classList.remove('dragover');
-            
-            const filePath = e.dataTransfer?.getData('text/plain');
-            if (!filePath) return;
-            
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (!(file instanceof TFile)) return;
-            
-            // Użyj moment.js do formatowania daty
+        this.setupDroppable(dayEl, async (file: TFile) => {
             const newDate = window.moment(date).format('YYYY-MM-DD');
-            
             await this.updateFileDate(file, newDate, refreshView);
         });
         
@@ -1429,33 +1386,8 @@ export default class TaggedCalendarPlugin extends Plugin {
         });
         
         // Dodaj obsługę upuszczania
-        itemsContainer.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            itemsContainer.classList.add('dragover');
-        });
-        
-        itemsContainer.addEventListener('dragleave', () => {
-            itemsContainer.classList.remove('dragover');
-        });
-        
-        itemsContainer.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            itemsContainer.classList.remove('dragover');
-            
-            const filePath = e.dataTransfer?.getData('text/plain');
-            console.log("[createUnplannedSection:drop] Start", {
-                filePath,
-                showUnplanned: this.showUnplanned
-            });
-
-            if (!filePath) return;
-            
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (!(file instanceof TFile)) return;
-            
+        this.setupDroppable(itemsContainer, async (file: TFile) => {
             await this.updateFileDate(file, null, refreshView);
-            
-            console.log("[createUnplannedSection:drop] Zakończono");
         });
         
         section.appendChild(itemsContainer);
@@ -1521,20 +1453,22 @@ export default class TaggedCalendarPlugin extends Plugin {
         }
     }
 
-    private async renderListView(container: HTMLElement, date: Date, query: string, refreshView: () => Promise<void>) {
+    // Nowa metoda pomocnicza do tworzenia siatki kalendarza
+    private async createCalendarGrid(showPastDays: boolean): Promise<HTMLElement> {
         const calendar = document.createElement('div');
         calendar.className = 'calendar-grid';
         
-        // Dodaj klasę show-past jeśli potrzeba
-        if (this.showPastDays) {
+        if (showPastDays) {
             calendar.classList.add('show-past');
         }
+        
+        return calendar;
+    }
 
-        // Zbierz pliki spełniające kryteria wyszukiwania
-        const files = await this.getFilteredFiles(query);
+    // Nowa metoda pomocnicza do mapowania plików na daty
+    private async mapFilesToDates(files: {file: TFile, date: Date}[]): Promise<Map<string, TFile[]>> {
         const taggedFiles = new Map<string, TFile[]>();
-
-        // Mapuj pliki na daty
+        
         for (const {file, date: fileDate} of files) {
             const dateStr = window.moment(fileDate).format('YYYY-MM-DD');
             
@@ -1543,35 +1477,44 @@ export default class TaggedCalendarPlugin extends Plugin {
             }
             taggedFiles.get(dateStr)?.push(file);
         }
+        
+        return taggedFiles;
+    }
 
-        // Pierwszy i ostatni dzień miesiąca
-        const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
-        const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    // Metoda pomocnicza do implementacji logiki drag-and-drop
+    private setupDroppable(element: HTMLElement, onDrop: (file: TFile) => Promise<void>): void {
+        element.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            element.classList.add('dragover');
+        });
+        
+        element.addEventListener('dragleave', () => {
+            element.classList.remove('dragover');
+        });
+        
+        element.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            element.classList.remove('dragover');
+            
+            const filePath = e.dataTransfer?.getData('text/plain');
+            if (!filePath) return;
+            
+            const file = this.app.vault.getAbstractFileByPath(filePath);
+            if (!(file instanceof TFile)) return;
+            
+            await onDrop(file);
+        });
+    }
 
-        // Dodaj dni miesiąca
-        for (let day = 1; day <= lastDay.getDate(); day++) {
-            const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
-            const dateStr = window.moment(currentDate).format('YYYY-MM-DD');
-            const entries = taggedFiles.get(dateStr) || [];
-            
-            const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
-            
-            // Dodaj klasę dla dni przed dzisiejszym
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            currentDate.setHours(0, 0, 0, 0);
-            
-            if (currentDate < today) {
-                dayEl.classList.add('past-day');
-            }
-            
-            // Dodaj tylko jeśli jest to dzisiejszy dzień lub przyszły,
-            // lub jeśli showPastDays jest true
-            if (currentDate >= today || this.showPastDays) {
-                calendar.appendChild(dayEl);
-            }
-        }
+    // Dodać metodę czyszczenia cache'u
+    private clearVirtualFileCache(): void {
+        this.virtualFileCache.clear();
+    }
 
-        container.appendChild(calendar);
+    // I wywoływać ją w odpowiednich momentach, np. przy zmianie miesiąca
+    // lub w metodzie onunload
+    onunload() {
+        // ... istniejący kod
+        this.clearVirtualFileCache();
     }
 } 

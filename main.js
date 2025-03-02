@@ -77,7 +77,7 @@ var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.defaultView = value;
       yield this.plugin.saveSettings();
     })));
-    new import_obsidian.Setting(containerEl).setName("Okres powtarzania").setDesc("Ile lat do przodu generowa\u0107 powtarzaj\u0105ce si\u0119 notatki").addSlider((slider) => slider.setLimits(1, 5, 1).setValue(this.plugin.settings.recurringLookAhead).setDynamicTooltip().onChange((value) => __async(this, null, function* () {
+    new import_obsidian.Setting(containerEl).setName("Okres powtarzania").setDesc("Ile lat do przodu generowa\u0107 powtarzaj\u0105ce si\u0119 notatki").addSlider((slider) => slider.setLimits(1, 10, 1).setValue(this.plugin.settings.recurringLookAhead).setDynamicTooltip().onChange((value) => __async(this, null, function* () {
       this.plugin.settings.recurringLookAhead = value;
       yield this.plugin.saveSettings();
     })));
@@ -235,7 +235,52 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         updateCalendar();
       });
       const dateLabel = document.createElement("span");
-      dateLabel.style.margin = "0 10px";
+      dateLabel.className = "current-month-label";
+      const updateHeader = () => {
+        const monthNamesNominative = [
+          "Stycze\u0144",
+          "Luty",
+          "Marzec",
+          "Kwiecie\u0144",
+          "Maj",
+          "Czerwiec",
+          "Lipiec",
+          "Sierpie\u0144",
+          "Wrzesie\u0144",
+          "Pa\u017Adziernik",
+          "Listopad",
+          "Grudzie\u0144"
+        ];
+        const monthNamesGenitive = [
+          "stycznia",
+          "lutego",
+          "marca",
+          "kwietnia",
+          "maja",
+          "czerwca",
+          "lipca",
+          "sierpnia",
+          "wrze\u015Bnia",
+          "pa\u017Adziernika",
+          "listopada",
+          "grudnia"
+        ];
+        let headerText = "";
+        if (state.view === "month") {
+          headerText = `${monthNamesNominative[state.currentDate.getMonth()]} ${state.currentDate.getFullYear()}`;
+        } else {
+          const weekStart = new Date(state.currentDate);
+          weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekStart.getDate() + 6);
+          if (weekStart.getMonth() === weekEnd.getMonth()) {
+            headerText = `${weekStart.getDate()} - ${weekEnd.getDate()} ${monthNamesGenitive[weekStart.getMonth()]} ${weekStart.getFullYear()}`;
+          } else {
+            headerText = `${weekStart.getDate()} ${monthNamesGenitive[weekStart.getMonth()]} - ${weekEnd.getDate()} ${monthNamesGenitive[weekEnd.getMonth()]} ${weekStart.getFullYear()}`;
+          }
+        }
+        dateLabel.textContent = headerText;
+      };
       navigationDiv.appendChild(prevButton);
       navigationDiv.appendChild(todayButton);
       navigationDiv.appendChild(nextButton);
@@ -267,6 +312,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
       const gridContainer = document.createElement("div");
       gridContainer.className = "calendar-grid-container";
       container.appendChild(gridContainer);
+      updateHeader();
       const updateCalendar = () => __async(this, null, function* () {
         gridContainer.innerHTML = "";
         const existingToggle = container.querySelector(".toggle-past-days");
@@ -309,6 +355,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
             calendarGrid.classList.remove("show-past");
           }
         }
+        updateHeader();
       });
       const refreshView = () => __async(this, null, function* () {
         console.log("[refreshView] Start", {
@@ -316,59 +363,15 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
           currentTag: this.currentTag,
           stackTrace: new Error().stack
         });
-        gridContainer.innerHTML = "";
+        const oldCalendarGrid = gridContainer.querySelector(".calendar-grid");
+        if (oldCalendarGrid) {
+          oldCalendarGrid.remove();
+        }
         const oldUnplannedContainer = container.querySelector(".unplanned-container");
         if (oldUnplannedContainer) {
           oldUnplannedContainer.remove();
         }
         yield updateCalendar();
-        const monthNamesGenitive = [
-          "stycznia",
-          "lutego",
-          "marca",
-          "kwietnia",
-          "maja",
-          "czerwca",
-          "lipca",
-          "sierpnia",
-          "wrze\u015Bnia",
-          "pa\u017Adziernika",
-          "listopada",
-          "grudnia"
-        ];
-        const monthNamesNominative = [
-          "Stycze\u0144",
-          "Luty",
-          "Marzec",
-          "Kwiecie\u0144",
-          "Maj",
-          "Czerwiec",
-          "Lipiec",
-          "Sierpie\u0144",
-          "Wrzesie\u0144",
-          "Pa\u017Adziernik",
-          "Listopad",
-          "Grudzie\u0144"
-        ];
-        if (state.view === "month") {
-          dateLabel.textContent = `${monthNamesNominative[state.currentDate.getMonth()]} ${state.currentDate.getFullYear()}`;
-        } else {
-          const weekStart = new Date(state.currentDate);
-          weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekEnd.getDate() + 6);
-          const startMonth = monthNamesGenitive[weekStart.getMonth()];
-          const endMonth = monthNamesGenitive[weekEnd.getMonth()];
-          const startYear = weekStart.getFullYear();
-          const endYear = weekEnd.getFullYear();
-          if (startMonth === endMonth && startYear === endYear) {
-            dateLabel.textContent = `${weekStart.getDate()} - ${weekEnd.getDate()} ${startMonth} ${startYear}`;
-          } else if (startYear === endYear) {
-            dateLabel.textContent = `${weekStart.getDate()} ${startMonth} - ${weekEnd.getDate()} ${endMonth} ${startYear}`;
-          } else {
-            dateLabel.textContent = `${weekStart.getDate()} ${startMonth} ${startYear} - ${weekEnd.getDate()} ${endMonth} ${endYear}`;
-          }
-        }
       });
       yield refreshView();
     });
@@ -602,7 +605,6 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
   }
   renderMonthView(container, date, query, refreshView) {
     return __async(this, null, function* () {
-      var _a;
       const calendar = document.createElement("div");
       calendar.className = "calendar-grid";
       if (this.showPastDays) {
@@ -616,19 +618,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         calendar.appendChild(dayHeader);
       });
       const files = yield this.getFilteredFiles(query);
-      const taggedFiles = new Map();
-      for (const { file, date: fileDate } of files) {
-        const dateStr = window.moment(fileDate).format("YYYY-MM-DD");
-        console.log("[renderMonthView] Mapowanie pliku na dat\u0119", {
-          file: file.path,
-          date: dateStr,
-          originalDate: fileDate
-        });
-        if (!taggedFiles.has(dateStr)) {
-          taggedFiles.set(dateStr, []);
-        }
-        (_a = taggedFiles.get(dateStr)) == null ? void 0 : _a.push(file);
-      }
+      const taggedFiles = yield this.mapFilesToDates(files);
       const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
       const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
       let firstDayOfWeek = firstDay.getDay() || 7;
@@ -655,7 +645,6 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
   }
   renderWeekView(container, date, query, refreshView) {
     return __async(this, null, function* () {
-      var _a;
       const calendar = document.createElement("div");
       calendar.className = "calendar-grid";
       if (this.showPastDays) {
@@ -669,22 +658,13 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         calendar.appendChild(dayHeader);
       });
       const files = yield this.getFilteredFiles(query);
-      const taggedFiles = new Map();
-      for (const { file, date: fileDate } of files) {
-        const localDate = new Date(fileDate.getTime() - fileDate.getTimezoneOffset() * 6e4);
-        const dateStr = localDate.toISOString().split("T")[0];
-        if (!taggedFiles.has(dateStr)) {
-          taggedFiles.set(dateStr, []);
-        }
-        (_a = taggedFiles.get(dateStr)) == null ? void 0 : _a.push(file);
-      }
+      const taggedFiles = yield this.mapFilesToDates(files);
       const weekStart = new Date(date);
       weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1);
       for (let i = 0; i < 7; i++) {
         const currentDate = new Date(weekStart);
         currentDate.setDate(currentDate.getDate() + i);
-        const localDate = new Date(currentDate.getTime() - currentDate.getTimezoneOffset() * 6e4);
-        const dateStr = localDate.toISOString().split("T")[0];
+        const dateStr = window.moment(currentDate).format("YYYY-MM-DD");
         const entries = taggedFiles.get(dateStr) || [];
         const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
         calendar.appendChild(dayEl);
@@ -965,23 +945,7 @@ ${newFrontmatter}
     dayNumber.setAttribute("data-day-name", dayNames[date.getDay()]);
     dayEl.appendChild(dayNumber);
     dayEl.appendChild(addButton);
-    dayEl.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      dayEl.classList.add("dragover");
-    });
-    dayEl.addEventListener("dragleave", () => {
-      dayEl.classList.remove("dragover");
-    });
-    dayEl.addEventListener("drop", (e) => __async(this, null, function* () {
-      var _a;
-      e.preventDefault();
-      dayEl.classList.remove("dragover");
-      const filePath = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-      if (!filePath)
-        return;
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (!(file instanceof import_obsidian.TFile))
-        return;
+    this.setupDroppable(dayEl, (file) => __async(this, null, function* () {
       const newDate = window.moment(date).format("YYYY-MM-DD");
       yield this.updateFileDate(file, newDate, refreshView);
     }));
@@ -1082,29 +1046,8 @@ ${newFrontmatter}
         const entry = this.createDraggableEntry(file, null);
         itemsContainer.appendChild(entry);
       });
-      itemsContainer.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        itemsContainer.classList.add("dragover");
-      });
-      itemsContainer.addEventListener("dragleave", () => {
-        itemsContainer.classList.remove("dragover");
-      });
-      itemsContainer.addEventListener("drop", (e) => __async(this, null, function* () {
-        var _a;
-        e.preventDefault();
-        itemsContainer.classList.remove("dragover");
-        const filePath = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-        console.log("[createUnplannedSection:drop] Start", {
-          filePath,
-          showUnplanned: this.showUnplanned
-        });
-        if (!filePath)
-          return;
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!(file instanceof import_obsidian.TFile))
-          return;
+      this.setupDroppable(itemsContainer, (file) => __async(this, null, function* () {
         yield this.updateFileDate(file, null, refreshView);
-        console.log("[createUnplannedSection:drop] Zako\u0144czono");
       }));
       section.appendChild(itemsContainer);
       return section;
@@ -1158,15 +1101,19 @@ ${newFrontmatter}
       }
     });
   }
-  renderListView(container, date, query, refreshView) {
+  createCalendarGrid(showPastDays) {
     return __async(this, null, function* () {
-      var _a;
       const calendar = document.createElement("div");
       calendar.className = "calendar-grid";
-      if (this.showPastDays) {
+      if (showPastDays) {
         calendar.classList.add("show-past");
       }
-      const files = yield this.getFilteredFiles(query);
+      return calendar;
+    });
+  }
+  mapFilesToDates(files) {
+    return __async(this, null, function* () {
+      var _a;
       const taggedFiles = new Map();
       for (const { file, date: fileDate } of files) {
         const dateStr = window.moment(fileDate).format("YYYY-MM-DD");
@@ -1175,24 +1122,34 @@ ${newFrontmatter}
         }
         (_a = taggedFiles.get(dateStr)) == null ? void 0 : _a.push(file);
       }
-      const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
-      const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-      for (let day = 1; day <= lastDay.getDate(); day++) {
-        const currentDate = new Date(date.getFullYear(), date.getMonth(), day, 12, 0, 0, 0);
-        const dateStr = window.moment(currentDate).format("YYYY-MM-DD");
-        const entries = taggedFiles.get(dateStr) || [];
-        const dayEl = this.createDroppableDay(currentDate, entries, refreshView);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        currentDate.setHours(0, 0, 0, 0);
-        if (currentDate < today) {
-          dayEl.classList.add("past-day");
-        }
-        if (currentDate >= today || this.showPastDays) {
-          calendar.appendChild(dayEl);
-        }
-      }
-      container.appendChild(calendar);
+      return taggedFiles;
     });
+  }
+  setupDroppable(element, onDrop) {
+    element.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      element.classList.add("dragover");
+    });
+    element.addEventListener("dragleave", () => {
+      element.classList.remove("dragover");
+    });
+    element.addEventListener("drop", (e) => __async(this, null, function* () {
+      var _a;
+      e.preventDefault();
+      element.classList.remove("dragover");
+      const filePath = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
+      if (!filePath)
+        return;
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian.TFile))
+        return;
+      yield onDrop(file);
+    }));
+  }
+  clearVirtualFileCache() {
+    this.virtualFileCache.clear();
+  }
+  onunload() {
+    this.clearVirtualFileCache();
   }
 };
