@@ -54,7 +54,9 @@ var DEFAULT_SETTINGS = {
   recurringLookAhead: 2,
   recurrenceField: "recurrence",
   generateDatesField: false,
-  newNotesFolder: ""
+  newNotesFolder: "",
+  templatesFolder: "",
+  useTemplates: false
 };
 var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -93,6 +95,14 @@ var TaggedCalendarSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.newNotesFolder = value;
       yield this.plugin.saveSettings();
     })));
+    new import_obsidian.Setting(containerEl).setName("Folder z szablonami").setDesc('\u015Acie\u017Cka do folderu zawieraj\u0105cego szablony notatek (np. "Szablony"). Pozostaw puste, aby nie u\u017Cywa\u0107 szablon\xF3w.').addText((text) => text.setPlaceholder("Szablony").setValue(this.plugin.settings.templatesFolder).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.templatesFolder = value;
+      yield this.plugin.saveSettings();
+    })));
+    new import_obsidian.Setting(containerEl).setName("U\u017Cywaj szablon\xF3w").setDesc("Czy pokazywa\u0107 list\u0119 szablon\xF3w podczas tworzenia nowej notatki.").addToggle((toggle) => toggle.setValue(this.plugin.settings.useTemplates).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.useTemplates = value;
+      yield this.plugin.saveSettings();
+    })));
   }
 };
 var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
@@ -108,6 +118,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
     this.currentView = "month";
     this.currentDate = new Date();
     this.showPastDays = false;
+    this.templateFilter = "";
   }
   onload() {
     return __async(this, null, function* () {
@@ -123,6 +134,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         const lines = source.split("\n").filter((line) => line.trim());
         this.filters = [];
         let showUnplanned = false;
+        let templateFilter = "";
         if (lines.length === 0)
           return;
         if (lines.length === 1 && !lines[0].includes(":")) {
@@ -139,6 +151,10 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
             };
           });
           showUnplanned = lines.some((line) => line.trim() === "+unplanned");
+          const templateFilterLine = lines.find((line) => line.trim().startsWith("+templates:"));
+          if (templateFilterLine) {
+            templateFilter = templateFilterLine.split(":")[1].trim();
+          }
         }
         if (this.filters.length === 0)
           return;
@@ -146,6 +162,7 @@ var TaggedCalendarPlugin = class extends import_obsidian.Plugin {
         calendar.className = "calendar-planner";
         this.currentFilterIndex = 0;
         this.showUnplanned = showUnplanned;
+        this.templateFilter = templateFilter;
         yield this.renderCalendar(calendar, this.filters[0].query, showUnplanned);
         el.appendChild(calendar);
         this.activeLeaf = this.app.workspace.activeLeaf;
@@ -915,27 +932,29 @@ ${newFrontmatter}
     });
     addButton.addEventListener("click", (e) => __async(this, null, function* () {
       e.stopPropagation();
-      const formattedDate = window.moment(date).format(this.settings.dateFormat);
-      const fileName = `Notatka ${formattedDate}`;
-      const filePath = this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${fileName}.md` : `${fileName}.md`;
-      const currentFilter = this.filters[this.currentFilterIndex];
-      const tags = this.extractTagsFromQuery(currentFilter.query);
-      const frontmatter = [
-        "---",
-        `${this.settings.dateField}: "[[${formattedDate}]]"`,
-        tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
-        "---",
-        "",
-        "# " + fileName
-      ].filter((line) => line !== "").join("\n");
-      if (this.settings.newNotesFolder) {
-        yield this.ensureFolderExists(this.settings.newNotesFolder);
-      }
-      const newFile = yield this.app.vault.create(filePath, frontmatter);
-      yield this.app.workspace.getLeaf().openFile(newFile);
-      if (this.container && this.currentTag) {
-        this.container.empty();
-        yield this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+      if (this.settings.useTemplates && this.settings.templatesFolder) {
+        const templates = yield this.getTemplates();
+        if (templates.length > 0) {
+          const menu = new import_obsidian.Menu();
+          menu.addItem((item) => {
+            item.setTitle("Pusty dokument").setIcon("file").onClick(() => __async(this, null, function* () {
+              yield this.createNewNote(date, null);
+            }));
+          });
+          menu.addSeparator();
+          for (const template of templates) {
+            menu.addItem((item) => {
+              item.setTitle(template.basename).setIcon("file-text").onClick(() => __async(this, null, function* () {
+                yield this.createNewNote(date, template);
+              }));
+            });
+          }
+          menu.showAtMouseEvent(e);
+        } else {
+          yield this.createNewNote(date, null);
+        }
+      } else {
+        yield this.createNewNote(date, null);
       }
     }));
     const dayNumber = document.createElement("div");
@@ -994,25 +1013,29 @@ ${newFrontmatter}
       addButton.style.display = "block";
       addButton.addEventListener("click", (e) => __async(this, null, function* () {
         e.stopPropagation();
-        const fileName = `Notatka ${window.moment().format("YYYYMMDDHHmmss")}`;
-        const filePath = this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${fileName}.md` : `${fileName}.md`;
-        const currentFilter = this.filters[this.currentFilterIndex];
-        const tags = this.extractTagsFromQuery(currentFilter.query);
-        const frontmatter = [
-          "---",
-          tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
-          "---",
-          "",
-          "# " + fileName
-        ].filter((line) => line !== "").join("\n");
-        if (this.settings.newNotesFolder) {
-          yield this.ensureFolderExists(this.settings.newNotesFolder);
-        }
-        const newFile = yield this.app.vault.create(filePath, frontmatter);
-        yield this.app.workspace.getLeaf().openFile(newFile);
-        if (this.container && this.currentTag) {
-          this.container.empty();
-          yield this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+        if (this.settings.useTemplates && this.settings.templatesFolder) {
+          const templates = yield this.getTemplates();
+          if (templates.length > 0) {
+            const menu = new import_obsidian.Menu();
+            menu.addItem((item) => {
+              item.setTitle("Pusty dokument").setIcon("file").onClick(() => __async(this, null, function* () {
+                yield this.createNewNote(null, null);
+              }));
+            });
+            menu.addSeparator();
+            for (const template of templates) {
+              menu.addItem((item) => {
+                item.setTitle(template.basename).setIcon("file-text").onClick(() => __async(this, null, function* () {
+                  yield this.createNewNote(null, template);
+                }));
+              });
+            }
+            menu.showAtMouseEvent(e);
+          } else {
+            yield this.createNewNote(null, null);
+          }
+        } else {
+          yield this.createNewNote(null, null);
         }
       }));
       headerContainer.appendChild(header);
@@ -1151,5 +1174,96 @@ ${newFrontmatter}
   }
   onunload() {
     this.clearVirtualFileCache();
+  }
+  getTemplates() {
+    return __async(this, null, function* () {
+      if (!this.settings.templatesFolder || !this.settings.useTemplates) {
+        return [];
+      }
+      const folder = this.app.vault.getAbstractFileByPath(this.settings.templatesFolder);
+      if (!folder || folder instanceof import_obsidian.TFile) {
+        return [];
+      }
+      const templates = this.app.vault.getMarkdownFiles().filter((file) => {
+        return file.path.startsWith(this.settings.templatesFolder + "/");
+      });
+      if (this.templateFilter) {
+        return templates.filter((file) => {
+          const metadata = this.app.metadataCache.getFileCache(file);
+          if (!(metadata == null ? void 0 : metadata.frontmatter))
+            return false;
+          const tags = metadata.frontmatter.tags;
+          if (Array.isArray(tags)) {
+            return tags.some((tag) => tag === this.templateFilter || tag === "#" + this.templateFilter || tag.replace(/^#/, "") === this.templateFilter);
+          }
+          return false;
+        });
+      }
+      return templates;
+    });
+  }
+  createNewNote(date, template) {
+    return __async(this, null, function* () {
+      let fileName;
+      if (date) {
+        const formattedDate = window.moment(date).format(this.settings.dateFormat);
+        fileName = `Notatka ${formattedDate}`;
+      } else {
+        fileName = `Notatka ${window.moment().format("YYYYMMDDHHmmss")}`;
+      }
+      const filePath = this.settings.newNotesFolder ? `${this.settings.newNotesFolder}/${fileName}.md` : `${fileName}.md`;
+      const currentFilter = this.filters[this.currentFilterIndex];
+      const tags = this.extractTagsFromQuery(currentFilter.query);
+      let content;
+      if (template) {
+        content = yield this.app.vault.read(template);
+        if (date) {
+          const formattedDate = window.moment(date).format(this.settings.dateFormat);
+          content = content.replace(/{{date}}/g, formattedDate);
+          content = content.replace(/{{title}}/g, fileName);
+        }
+        if (date) {
+          const formattedDate = window.moment(date).format(this.settings.dateFormat);
+          if (content.startsWith("---")) {
+            const endOfFrontmatter = content.indexOf("---", 3);
+            if (endOfFrontmatter !== -1) {
+              const frontmatterLines = content.substring(0, endOfFrontmatter).split("\n");
+              const restOfContent = content.substring(endOfFrontmatter);
+              const filteredLines = frontmatterLines.filter((line) => !line.trim().startsWith(`${this.settings.dateField}:`));
+              filteredLines.push(`${this.settings.dateField}: "[[${formattedDate}]]"`);
+              content = filteredLines.join("\n") + "\n" + restOfContent;
+            }
+          } else {
+            const frontmatter = [
+              "---",
+              `${this.settings.dateField}: "[[${formattedDate}]]"`,
+              tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
+              "---",
+              ""
+            ].filter((line) => line !== "").join("\n");
+            content = frontmatter + content;
+          }
+        }
+      } else {
+        const frontmatter = [
+          "---",
+          date ? `${this.settings.dateField}: "[[${window.moment(date).format(this.settings.dateFormat)}]]"` : "",
+          tags.length > 0 ? "tags:\n  - " + tags.map((tag) => `"#${tag}"`).join("\n  - ").replace(/##/g, "#") : "",
+          "---",
+          "",
+          "# " + fileName
+        ].filter((line) => line !== "").join("\n");
+        content = frontmatter;
+      }
+      if (this.settings.newNotesFolder) {
+        yield this.ensureFolderExists(this.settings.newNotesFolder);
+      }
+      const newFile = yield this.app.vault.create(filePath, content);
+      yield this.app.workspace.getLeaf().openFile(newFile);
+      if (this.container && this.currentTag) {
+        this.container.empty();
+        yield this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+      }
+    });
   }
 };

@@ -5,6 +5,10 @@ Autor: Damian Zachwieja
 💬 [ztechnicznego.pl – newsletter o produktywnym korzystaniu z technologii](https://ztechnicznego.pl)
 
 ---
+
+> ℹ️ Kod wtyczki został wygenerowany przez sztuczną inteligencję.
+
+---
 Calendar Planner to plugin do Obsidian, który umożliwia wizualizację i zarządzanie notatkami w formie kalendarza. Plugin pozwala na filtrowanie notatek za pomocą tagów i zaawansowanych zapytań wyszukiwania, a także oferuje wygodne przeciąganie i upuszczanie notatek między dniami.
 
 

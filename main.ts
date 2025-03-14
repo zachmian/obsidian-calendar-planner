@@ -15,6 +15,8 @@ interface TaggedCalendarSettings {
     recurrenceField: string; // nazwa pola do oznaczania powtarzalności
     generateDatesField: boolean; // czy generować pole dates dla notatek powtarzalnych
     newNotesFolder: string; // Nowe ustawienie
+    templatesFolder: string; // Nowe ustawienie - folder z szablonami
+    useTemplates: boolean; // Czy używać szablonów
 }
 
 const DEFAULT_SETTINGS: TaggedCalendarSettings = {
@@ -24,7 +26,9 @@ const DEFAULT_SETTINGS: TaggedCalendarSettings = {
     recurringLookAhead: 2,
     recurrenceField: 'recurrence',
     generateDatesField: false,
-    newNotesFolder: '' // Domyślnie pusty (główny folder)
+    newNotesFolder: '', // Domyślnie pusty (główny folder)
+    templatesFolder: '', // Domyślnie pusty
+    useTemplates: false // Domyślnie wyłączone
 }
 
 interface CalendarState {
@@ -135,6 +139,27 @@ class TaggedCalendarSettingTab extends PluginSettingTab {
                     this.plugin.settings.newNotesFolder = value;
                     await this.plugin.saveSettings();
                 }));
+
+        new Setting(containerEl)
+            .setName('Folder z szablonami')
+            .setDesc('Ścieżka do folderu zawierającego szablony notatek (np. "Szablony"). Pozostaw puste, aby nie używać szablonów.')
+            .addText(text => text
+                .setPlaceholder('Szablony')
+                .setValue(this.plugin.settings.templatesFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.templatesFolder = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Używaj szablonów')
+            .setDesc('Czy pokazywać listę szablonów podczas tworzenia nowej notatki.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.useTemplates)
+                .onChange(async (value) => {
+                    this.plugin.settings.useTemplates = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 }
 
@@ -150,6 +175,7 @@ export default class TaggedCalendarPlugin extends Plugin {
     private currentView: 'month' | 'week' = 'month';
     private currentDate: Date = new Date();
     private showPastDays: boolean = false;
+    private templateFilter: string = '';
 
     async onload() {
         await this.loadSettings();
@@ -172,6 +198,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             const lines = source.split('\n').filter(line => line.trim());
             this.filters = [];
             let showUnplanned = false;
+            let templateFilter = '';
             
             if (lines.length === 0) return;
 
@@ -195,6 +222,12 @@ export default class TaggedCalendarPlugin extends Plugin {
                 
                 // Sprawdź opcje
                 showUnplanned = lines.some(line => line.trim() === '+unplanned');
+                
+                // Sprawdź filtr szablonów
+                const templateFilterLine = lines.find(line => line.trim().startsWith('+templates:'));
+                if (templateFilterLine) {
+                    templateFilter = templateFilterLine.split(':')[1].trim();
+                }
             }
 
             if (this.filters.length === 0) return;
@@ -205,6 +238,7 @@ export default class TaggedCalendarPlugin extends Plugin {
             // Renderuj kalendarz z pierwszym filtrem
             this.currentFilterIndex = 0;
             this.showUnplanned = showUnplanned;
+            this.templateFilter = templateFilter;
             await this.renderCalendar(calendar, this.filters[0].query, showUnplanned);
 
             el.appendChild(calendar);
@@ -1215,32 +1249,47 @@ export default class TaggedCalendarPlugin extends Plugin {
         // Obsługa kliknięcia w plus
         addButton.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const formattedDate = window.moment(date).format(this.settings.dateFormat);
-            const fileName = `Notatka ${formattedDate}`;
-            // Dodaj folder do ścieżki pliku jeśli jest ustawiony
-            const filePath = this.settings.newNotesFolder 
-                ? `${this.settings.newNotesFolder}/${fileName}.md`
-                : `${fileName}.md`;
-            const currentFilter = this.filters[this.currentFilterIndex];
-            const tags = this.extractTagsFromQuery(currentFilter.query);
-            const frontmatter = [
-                '---',
-                `${this.settings.dateField}: "[[${formattedDate}]]"`,
-                tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
-                '---',
-                '',
-                '# ' + fileName
-            ].filter(line => line !== '').join('\n');
-
-            if (this.settings.newNotesFolder) {
-                await this.ensureFolderExists(this.settings.newNotesFolder);
-            }
-            const newFile = await this.app.vault.create(filePath, frontmatter);
-            await this.app.workspace.getLeaf().openFile(newFile);
             
-            if (this.container && this.currentTag) {
-                this.container.empty();
-                await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+            if (this.settings.useTemplates && this.settings.templatesFolder) {
+                // Pobierz dostępne szablony
+                const templates = await this.getTemplates();
+                
+                // Jeśli są szablony, pokaż menu
+                if (templates.length > 0) {
+                    const menu = new Menu();
+                    
+                    // Dodaj opcję pustego dokumentu
+                    menu.addItem(item => {
+                        item.setTitle('Pusty dokument')
+                            .setIcon('file')
+                            .onClick(async () => {
+                                await this.createNewNote(date, null);
+                            });
+                    });
+                    
+                    // Dodaj separator
+                    menu.addSeparator();
+                    
+                    // Dodaj opcje szablonów
+                    for (const template of templates) {
+                        menu.addItem(item => {
+                            item.setTitle(template.basename)
+                                .setIcon('file-text')
+                                .onClick(async () => {
+                                    await this.createNewNote(date, template);
+                                });
+                        });
+                    }
+                    
+                    // Pokaż menu przy przycisku
+                    menu.showAtMouseEvent(e);
+                } else {
+                    // Jeśli nie ma szablonów, utwórz pusty dokument
+                    await this.createNewNote(date, null);
+                }
+            } else {
+                // Jeśli szablony są wyłączone, utwórz pusty dokument
+                await this.createNewNote(date, null);
             }
         });
 
@@ -1315,30 +1364,47 @@ export default class TaggedCalendarPlugin extends Plugin {
 
         addButton.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const fileName = `Notatka ${window.moment().format('YYYYMMDDHHmmss')}`;
-            // Dodaj folder do ścieżki pliku jeśli jest ustawiony
-            const filePath = this.settings.newNotesFolder 
-                ? `${this.settings.newNotesFolder}/${fileName}.md`
-                : `${fileName}.md`;
-            const currentFilter = this.filters[this.currentFilterIndex];
-            const tags = this.extractTagsFromQuery(currentFilter.query);
-            const frontmatter = [
-                '---',
-                tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
-                '---',
-                '',
-                '# ' + fileName
-            ].filter(line => line !== '').join('\n');
-
-            if (this.settings.newNotesFolder) {
-                await this.ensureFolderExists(this.settings.newNotesFolder);
-            }
-            const newFile = await this.app.vault.create(filePath, frontmatter);
-            await this.app.workspace.getLeaf().openFile(newFile);
             
-            if (this.container && this.currentTag) {
-                this.container.empty();
-                await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+            if (this.settings.useTemplates && this.settings.templatesFolder) {
+                // Pobierz dostępne szablony
+                const templates = await this.getTemplates();
+                
+                // Jeśli są szablony, pokaż menu
+                if (templates.length > 0) {
+                    const menu = new Menu();
+                    
+                    // Dodaj opcję pustego dokumentu
+                    menu.addItem(item => {
+                        item.setTitle('Pusty dokument')
+                            .setIcon('file')
+                            .onClick(async () => {
+                                await this.createNewNote(null, null);
+                            });
+                    });
+                    
+                    // Dodaj separator
+                    menu.addSeparator();
+                    
+                    // Dodaj opcje szablonów
+                    for (const template of templates) {
+                        menu.addItem(item => {
+                            item.setTitle(template.basename)
+                                .setIcon('file-text')
+                                .onClick(async () => {
+                                    await this.createNewNote(null, template);
+                                });
+                        });
+                    }
+                    
+                    // Pokaż menu przy przycisku
+                    menu.showAtMouseEvent(e);
+                } else {
+                    // Jeśli nie ma szablonów, utwórz pusty dokument
+                    await this.createNewNote(null, null);
+                }
+            } else {
+                // Jeśli szablony są wyłączone, utwórz pusty dokument
+                await this.createNewNote(null, null);
             }
         });
 
@@ -1516,5 +1582,143 @@ export default class TaggedCalendarPlugin extends Plugin {
     onunload() {
         // ... istniejący kod
         this.clearVirtualFileCache();
+    }
+
+    private async getTemplates(): Promise<TFile[]> {
+        if (!this.settings.templatesFolder || !this.settings.useTemplates) {
+            return [];
+        }
+        
+        const folder = this.app.vault.getAbstractFileByPath(this.settings.templatesFolder);
+        if (!folder || folder instanceof TFile) {
+            return [];
+        }
+        
+        const templates = this.app.vault.getMarkdownFiles().filter(file => {
+            // Sprawdź czy plik jest w folderze szablonów
+            return file.path.startsWith(this.settings.templatesFolder + '/');
+        });
+        
+        // Jeśli jest filtr szablonów, zastosuj go
+        if (this.templateFilter) {
+            return templates.filter(file => {
+                const metadata = this.app.metadataCache.getFileCache(file);
+                if (!metadata?.frontmatter) return false;
+                
+                // Sprawdź czy szablon ma tag zgodny z filtrem
+                const tags = metadata.frontmatter.tags;
+                if (Array.isArray(tags)) {
+                    return tags.some(tag => 
+                        tag === this.templateFilter || 
+                        tag === '#' + this.templateFilter || 
+                        tag.replace(/^#/, '') === this.templateFilter
+                    );
+                }
+                
+                return false;
+            });
+        }
+        
+        return templates;
+    }
+
+    private async createNewNote(date: Date | null, template: TFile | null): Promise<void> {
+        // Generuj nazwę pliku
+        let fileName: string;
+        if (date) {
+            const formattedDate = window.moment(date).format(this.settings.dateFormat);
+            fileName = `Notatka ${formattedDate}`;
+        } else {
+            fileName = `Notatka ${window.moment().format('YYYYMMDDHHmmss')}`;
+        }
+        
+        // Ustal ścieżkę pliku
+        const filePath = this.settings.newNotesFolder 
+            ? `${this.settings.newNotesFolder}/${fileName}.md`
+            : `${fileName}.md`;
+        
+        // Pobierz tagi z aktualnego filtra
+        const currentFilter = this.filters[this.currentFilterIndex];
+        const tags = this.extractTagsFromQuery(currentFilter.query);
+        
+        // Przygotuj zawartość
+        let content: string;
+        
+        if (template) {
+            // Jeśli wybrano szablon, użyj jego zawartości
+            content = await this.app.vault.read(template);
+            
+            // Zastąp zmienne w szablonie
+            if (date) {
+                const formattedDate = window.moment(date).format(this.settings.dateFormat);
+                content = content.replace(/{{date}}/g, formattedDate);
+                content = content.replace(/{{title}}/g, fileName);
+            }
+            
+            // Dodaj datę do frontmattera jeśli jest podana
+            if (date) {
+                const formattedDate = window.moment(date).format(this.settings.dateFormat);
+                
+                // Sprawdź czy szablon ma już frontmatter
+                if (content.startsWith('---')) {
+                    // Znajdź koniec frontmattera
+                    const endOfFrontmatter = content.indexOf('---', 3);
+                    if (endOfFrontmatter !== -1) {
+                        // Podziel na frontmatter i resztę zawartości
+                        const frontmatterLines = content.substring(0, endOfFrontmatter).split('\n');
+                        const restOfContent = content.substring(endOfFrontmatter);
+                        
+                        // Usuń istniejące pole daty, jeśli istnieje
+                        const filteredLines = frontmatterLines.filter(line => 
+                            !line.trim().startsWith(`${this.settings.dateField}:`)
+                        );
+                        
+                        // Dodaj pole daty
+                        filteredLines.push(`${this.settings.dateField}: "[[${formattedDate}]]"`);
+                        
+                        // Złącz z powrotem
+                        content = filteredLines.join('\n') + '\n' + restOfContent;
+                    }
+                } else {
+                    // Dodaj nowy frontmatter
+                    const frontmatter = [
+                        '---',
+                        `${this.settings.dateField}: "[[${formattedDate}]]"`,
+                        tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
+                        '---',
+                        ''
+                    ].filter(line => line !== '').join('\n');
+                    
+                    content = frontmatter + content;
+                }
+            }
+        } else {
+            // Jeśli nie wybrano szablonu, utwórz pusty dokument
+            const frontmatter = [
+                '---',
+                date ? `${this.settings.dateField}: "[[${window.moment(date).format(this.settings.dateFormat)}]]"` : '',
+                tags.length > 0 ? 'tags:\n  - ' + tags.map(tag => `"#${tag}"`).join('\n  - ').replace(/##/g, '#') : '',
+                '---',
+                '',
+                '# ' + fileName
+            ].filter(line => line !== '').join('\n');
+            
+            content = frontmatter;
+        }
+        
+        // Utwórz folder jeśli potrzeba
+        if (this.settings.newNotesFolder) {
+            await this.ensureFolderExists(this.settings.newNotesFolder);
+        }
+        
+        // Utwórz plik
+        const newFile = await this.app.vault.create(filePath, content);
+        await this.app.workspace.getLeaf().openFile(newFile);
+        
+        // Odśwież widok
+        if (this.container && this.currentTag) {
+            this.container.empty();
+            await this.renderCalendar(this.container, this.currentTag, this.showUnplanned);
+        }
     }
 } 
